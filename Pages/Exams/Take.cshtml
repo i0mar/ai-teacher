@@ -1,0 +1,48 @@
+@page "{id:guid}"
+@model AiTeacher.Pages.Exams.TakeModel
+@{
+    ViewData["Title"] = "Take Exam";
+    string Letter(int idx) => ((char)('A' + idx)).ToString();
+}
+
+@if (Model.Exam is null)
+{
+    <div class="card">
+        <h1>Exam not found</h1>
+        <a class="btn" asp-page="/Exams/Index">Back to exams</a>
+    </div>
+    return;
+}
+
+<div class="card">
+    <h1>@Model.Exam.Title</h1>
+    <p class="muted">@Model.Exam.Description</p>
+</div>
+
+<form method="post" class="stack">
+    @for (var i = 0; i < Model.Exam.Questions.Count; i++)
+    {
+        var q = Model.Exam.Questions[i];
+        <div class="card question">
+            <h2 class="h3">Question @(i + 1) <span class="badge subtle">@q.Section</span></h2>
+            <p class="prompt">@q.Prompt</p>
+
+            <div class="choices">
+                @for (var c = 0; c < q.Choices.Count; c++)
+                {
+                    var inputId = $"q_{q.Id}_{c}";
+                    <label class="choice" for="@inputId">
+                        <input id="@inputId" type="radio" name="answer_@q.Id" value="@c" />
+                        <span class="pill small">@Letter(c)</span>
+                        <span>@q.Choices[c]</span>
+                    </label>
+                }
+            </div>
+        </div>
+    }
+
+    <div class="actions">
+        <button class="btn primary" type="submit">Submit</button>
+        <a class="btn" asp-page="/Exams/Index">Cancel</a>
+    </div>
+</form>

@@ -1,0 +1,91 @@
+@page "{id:guid}"
+@model AiTeacher.Pages.Videos.WatchModel
+@{
+    ViewData["Title"] = "Watch";
+}
+
+@if (Model.Video is null)
+{
+    <div class="card">
+        <h1>Video not found</h1>
+        <a class="btn" asp-page="/Videos/Index">Back to videos</a>
+    </div>
+    return;
+}
+
+<script type="application/json" id="board-lines">@Html.Raw(System.Text.Json.JsonSerializer.Serialize(Model.Video.BoardLines))</script>
+<script type="application/json" id="board-timings">@Html.Raw(System.Text.Json.JsonSerializer.Serialize(Model.Video.BoardTimings))</script>
+
+<div class="card">
+    <div class="meta">
+        <span class="badge">@Model.Video.SourceType</span>
+        <span class="muted">@Model.Video.CreatedAtUtc.ToLocalTime().ToString("g")</span>
+    </div>
+    <h1>@Model.Video.Title</h1>
+
+    @if (!string.IsNullOrWhiteSpace(Model.Video.VideoUrl))
+    {
+        <video class="video" controls src="@Model.Video.VideoUrl"></video>
+        <p class="muted small">Saved video file.</p>
+    }
+    else
+    {
+        <div class="avatar-stage">
+            <canvas
+                id="avatar-canvas"
+                width="960"
+                height="540"
+                data-video-id="@Model.Video.Id"
+                data-avatar-url="@Model.Video.AvatarUrl"></canvas>
+        </div>
+
+        <div class="player">
+            <button id="avatar-play" type="button" class="btn primary">Play</button>
+            <button id="avatar-stop" type="button" class="btn">Stop</button>
+            <button id="lesson-ask" type="button" class="btn">Ask a question</button>
+            <button id="qa-understood" type="button" class="btn" hidden>I understood</button>
+            <label class="label inline" for="avatar-speed">Speed</label>
+            <input id="avatar-speed" type="range" min="0.7" max="1.3" step="0.1" value="1.0" />
+            <span class="muted small" id="avatar-speed-value">1.0×</span>
+
+            @if (!string.IsNullOrWhiteSpace(Model.Video.AudioUrl))
+            {
+                <button id="avatar-export" type="button" class="btn">Save video</button>
+            }
+        </div>
+
+        @if (!string.IsNullOrWhiteSpace(Model.Video.AudioUrl))
+        {
+            <audio id="narration-audio" class="audio" controls src="@Model.Video.AudioUrl"></audio>
+            <p class="muted small">AI-generated teacher + narrated whiteboard. Click “Save video” to export a WebM file.</p>
+        }
+        else
+        {
+            <p class="muted small">Tip: Enable OpenAI to generate narration audio files (required for “Save video”).</p>
+        }
+    }
+</div>
+
+<pre id="lesson-script" class="card script">@Model.Video.Script</pre>
+
+<div class="loading-overlay" id="qa-overlay" hidden>
+    <div class="card qa-modal form" role="dialog" aria-modal="true" aria-labelledby="qa-title">
+        <div class="qa-head">
+            <div>
+                <div class="h3" id="qa-title">Ask a question</div>
+                <div class="muted small">The lesson pauses while you ask, then I’ll answer on the whiteboard.</div>
+            </div>
+            <button type="button" class="btn" id="qa-close">Back to lesson</button>
+        </div>
+
+        <label class="label" for="qa-question">Your question</label>
+        <textarea id="qa-question" class="input" rows="3" placeholder="What part should I explain more?"></textarea>
+
+        <div class="qa-actions">
+            <button type="button" class="btn primary" id="qa-submit">Ask</button>
+        </div>
+
+        <div class="muted small qa-error" id="qa-error" hidden></div>
+        <div class="qa-answer" id="qa-answer" hidden></div>
+    </div>
+</div>

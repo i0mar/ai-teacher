@@ -1,0 +1,48 @@
+@page
+@model AiTeacher.Pages.Videos.IndexModel
+@{
+    ViewData["Title"] = "Videos";
+}
+
+<div class="card">
+    <h1>Videos (beta)</h1>
+    <p class="muted">
+        These are narrated playback sessions built from lesson scripts and solution explanations.
+        For full AI avatar videos, plug in a real provider behind the same “video job” concept.
+    </p>
+</div>
+
+<div class="grid">
+    @if (Model.Videos.Count == 0)
+    {
+        <div class="card">
+            <h2 class="h3">No videos yet</h2>
+            <p class="muted">Generate a lesson or create a solution video from exam results.</p>
+            <div class="actions">
+                <a class="btn primary" asp-page="/Lessons/Index">Generate a lesson</a>
+                <a class="btn" asp-page="/Exams/Index">Take an exam</a>
+            </div>
+        </div>
+    }
+
+    @foreach (var v in Model.Videos)
+    {
+        <div class="card">
+            <div class="meta">
+                <span class="badge">@v.SourceType</span>
+                @if (!string.IsNullOrWhiteSpace(v.VideoUrl))
+                {
+                    <span class="badge good">Video</span>
+                }
+                @if (!string.IsNullOrWhiteSpace(v.AudioUrl))
+                {
+                    <span class="badge good">Audio</span>
+                }
+                <span class="muted">@v.CreatedAtUtc.ToLocalTime().ToString("g")</span>
+            </div>
+            <h2 class="h3">@v.Title</h2>
+            <p class="muted small">Script length: @v.Script.Length characters</p>
+            <a class="btn primary" asp-page="/Videos/Watch" asp-route-id="@v.Id">Watch</a>
+        </div>
+    }
+</div>

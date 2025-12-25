@@ -1,0 +1,51 @@
+@page
+@model AiTeacher.Pages.Exams.IndexModel
+@{
+    ViewData["Title"] = "Exams";
+}
+
+<div class="split">
+    <div>
+        <h1>Practice Exams</h1>
+        <p class="muted">Take an original mini exam, then generate explanations and solution videos.</p>
+
+        <div class="grid">
+            @foreach (var exam in Model.Exams)
+            {
+                <div class="card">
+                    <h2 class="h3">@exam.Title</h2>
+                    <p class="muted">@exam.Description</p>
+                    <div class="meta">
+                        <span>@exam.Questions.Count questions</span>
+                        @if (exam.IsGenerated)
+                        {
+                            <span class="badge">Generated</span>
+                        }
+                    </div>
+                    <a class="btn primary" asp-page="/Exams/Take" asp-route-id="@exam.Id">Start</a>
+                </div>
+            }
+        </div>
+    </div>
+
+    <div class="card form">
+        <h2>Generate a new mini exam</h2>
+        <form method="post">
+            <label class="label" for="section">Section</label>
+            <select id="section" name="Section" class="input">
+                <option value="Mixed" selected>Mixed</option>
+                <option value="Math">Math</option>
+                <option value="ReadingWriting">Reading/Writing</option>
+            </select>
+
+            <label class="label" for="count">Question count</label>
+            <input id="count" name="QuestionCount" type="number" min="5" max="30" value="10" class="input" />
+
+            <button class="btn" type="submit">Generate</button>
+            <p class="muted small">
+                In Stub mode this uses a local question bank. Set <code>Ai__Provider=OpenAI</code> for AI generation.
+            </p>
+        </form>
+    </div>
+</div>
+

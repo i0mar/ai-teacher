@@ -1,0 +1,49 @@
+@page
+@model IndexModel
+@{
+    ViewData["Title"] = "Home";
+}
+
+<section class="hero">
+    <div class="hero-text">
+        <h1>Learn SAT with an AI tutor</h1>
+        <p class="lead">
+            Generate bite-sized lessons, take original practice exams, and get step-by-step explanations.
+            Turn explanations into narrated “videos” you can replay anytime.
+        </p>
+        <div class="actions">
+            <a class="btn primary" asp-page="/Exams/Index">Take a practice exam</a>
+            <a class="btn" asp-page="/Lessons/Index">Generate a lesson</a>
+        </div>
+    </div>
+    <div class="hero-card">
+        <h2>Quick start</h2>
+        <ol>
+            <li>Pick a lesson topic or generate a mini exam.</li>
+            <li>Submit answers and review results.</li>
+            <li>Click “Explain” or “Make video” for guided solutions.</li>
+        </ol>
+        <p class="muted">
+            Tip: Set <code>Ai__Provider=OpenAI</code> to enable live generation.
+        </p>
+    </div>
+</section>
+
+<section class="grid">
+    <div class="card">
+        <h3>Lessons</h3>
+        <p>Generate a clear SAT lesson script with examples and a mini-quiz.</p>
+        <a class="link" asp-page="/Lessons/Index">Explore lessons →</a>
+    </div>
+    <div class="card">
+        <h3>Exams</h3>
+        <p>Take original SAT-style practice questions and track correctness.</p>
+        <a class="link" asp-page="/Exams/Index">Browse exams →</a>
+    </div>
+    <div class="card">
+        <h3>Videos (beta)</h3>
+        <p>Turn scripts and solutions into narrated playback sessions.</p>
+        <a class="link" asp-page="/Videos/Index">View videos →</a>
+    </div>
+</section>
+

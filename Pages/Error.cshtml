@@ -1,0 +1,12 @@
+@page
+@model ErrorModel
+@{
+    ViewData["Title"] = "Error";
+}
+
+<div class="card">
+    <h1>Something went wrong</h1>
+    <p class="muted">Request ID: <code>@Model.RequestId</code></p>
+    <p>Try refreshing the page. If the problem persists, check server logs.</p>
+</div>
+

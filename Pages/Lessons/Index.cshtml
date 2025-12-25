@@ -1,0 +1,51 @@
+@page
+@model AiTeacher.Pages.Lessons.IndexModel
+@{
+    ViewData["Title"] = "Lessons";
+}
+
+<div class="split">
+    <div>
+        <h1>Lessons</h1>
+        <p class="muted">Generate a lesson script (then watch it as a narrated “video”).</p>
+
+        <form method="post" class="card form" data-loading="lesson">
+            <label class="label" for="topic">Lesson topic</label>
+            <input id="topic" name="Topic" class="input" value="@Model.Topic" placeholder="e.g., Linear equations, grammar transitions, inference questions…" />
+
+            <button class="btn primary" type="submit">Generate lesson</button>
+            <p class="muted small">
+                In Stub mode this uses a local template. Set <code>Ai__Provider=OpenAI</code> for AI generation.
+            </p>
+        </form>
+    </div>
+
+    <div class="card">
+        <h2>Suggested topics</h2>
+        <ul class="topic-list">
+            @foreach (var t in Model.SuggestedTopics)
+            {
+                <li>
+                    <form method="post" class="topic-pill" data-loading="lesson">
+                        <input type="hidden" name="Topic" value="@t" />
+                        <button type="submit" class="pill">@t</button>
+                    </form>
+                </li>
+            }
+        </ul>
+        <p class="muted small">
+            Tip: If you want a lesson that matches your weaknesses, take an exam first and generate a “solution video”
+            for missed questions.
+        </p>
+    </div>
+</div>
+
+<div class="loading-overlay" data-loading-overlay="lesson" hidden>
+    <div class="loading-card" role="status" aria-live="polite">
+        <div class="spinner" aria-hidden="true"></div>
+        <div>
+            <div class="loading-title">Generating lesson…</div>
+            <div class="muted small">This can take a bit. Keep this tab open.</div>
+        </div>
+    </div>
+</div>

@@ -1,0 +1,98 @@
+@page "{attemptId:guid}"
+@model AiTeacher.Pages.Exams.ResultsModel
+@{
+    ViewData["Title"] = "Results";
+    string Letter(int idx) => ((char)('A' + idx)).ToString();
+}
+
+@if (Model.Exam is null || Model.Attempt is null)
+{
+    <div class="card">
+        <h1>Results not found</h1>
+        <p class="muted">This attempt may have expired.</p>
+        <a class="btn" asp-page="/Exams/Index">Back to exams</a>
+    </div>
+    return;
+}
+
+<div class="card">
+    <h1>Results</h1>
+    <p class="muted">@Model.Exam.Title</p>
+    <div class="score">
+        <div class="score-big">@Model.CorrectCount / @Model.TotalCount</div>
+        <div class="muted">Correct (@Model.PercentCorrect%)</div>
+    </div>
+    <div class="actions">
+        <a class="btn primary" asp-page="/Exams/Index">Take another exam</a>
+        <a class="btn" asp-page="/Videos/Index">View videos</a>
+    </div>
+</div>
+
+<div class="stack" data-attempt-id="@Model.Attempt.Id">
+    @for (var i = 0; i < Model.Review.Count; i++)
+    {
+        var r = Model.Review[i];
+        <div class="card question">
+            <h2 class="h3">
+                Question @(i + 1)
+                @if (r.IsCorrect)
+                {
+                    <span class="badge good">Correct</span>
+                }
+                else
+                {
+                    <span class="badge bad">Review</span>
+                }
+                <span class="badge subtle">@r.Section</span>
+            </h2>
+            <p class="prompt">@r.Prompt</p>
+
+            <div class="choices">
+                @for (var c = 0; c < r.Choices.Count; c++)
+                {
+                    var classes = "choice readonly";
+                    if (c == r.CorrectChoiceIndex) classes += " correct";
+                    if (r.StudentChoiceIndex is not null && c == r.StudentChoiceIndex.Value) classes += " chosen";
+                    <div class="@classes">
+                        <span class="pill small">@Letter(c)</span>
+                        <span>@r.Choices[c]</span>
+                    </div>
+                }
+            </div>
+
+            <div class="actions">
+                <button
+                    type="button"
+                    class="btn"
+                    data-action="explain"
+                    data-question-id="@r.QuestionId">
+                    Explain (AI)
+                </button>
+                <button
+                    type="button"
+                    class="btn"
+                    data-action="make-video"
+                    data-question-id="@r.QuestionId">
+                    Make video
+                </button>
+            </div>
+
+            <div class="explanation" id="explain_@r.QuestionId">
+                @if (!string.IsNullOrWhiteSpace(r.CachedExplanation))
+                {
+                    <pre class="script">@r.CachedExplanation</pre>
+                }
+            </div>
+        </div>
+    }
+</div>
+
+<div class="loading-overlay" data-loading-overlay="video" hidden>
+    <div class="loading-card" role="status" aria-live="polite">
+        <div class="spinner" aria-hidden="true"></div>
+        <div>
+            <div class="loading-title">Creating video…</div>
+            <div class="muted small">This can take a bit. Keep this tab open.</div>
+        </div>
+    </div>
+</div>

@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>@ViewData["Title"] - AI SAT Teacher</title>
+    <link rel="stylesheet" href="~/css/site.css" asp-append-version="true" />
+</head>
+<body>
+    <header class="topbar">
+        <div class="container topbar-inner">
+            <a class="brand" asp-page="/Index">AI SAT Teacher</a>
+            <nav class="nav">
+                <a asp-page="/Lessons/Index">Lessons</a>
+                <a asp-page="/Exams/Index">Exams</a>
+                <a asp-page="/Videos/Index">Videos</a>
+                <a asp-page="/About">About</a>
+            </nav>
+        </div>
+    </header>
+
+    <main class="container content">
+        @RenderBody()
+    </main>
+
+    <footer class="footer">
+        <div class="container footer-inner">
+            <span>AI SAT Teacher (prototype)</span>
+            <span class="muted">Original practice content — not affiliated with the College Board.</span>
+        </div>
+    </footer>
+
+    <script src="~/js/site.js" asp-append-version="true"></script>
+    @await RenderSectionAsync("Scripts", required: false)
+</body>
+</html>
+

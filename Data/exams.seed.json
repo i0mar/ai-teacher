@@ -1,0 +1,193 @@
+[
+  {
+    "id": "d6d6a5e0-0a4e-4c48-9f83-84d1e1cc0e44",
+    "title": "SAT Mini Practice Test 1 (Original)",
+    "description": "10 original practice questions across Math and Reading/Writing.",
+    "createdAtUtc": "2025-12-15T00:00:00Z",
+    "questions": [
+      {
+        "id": "d1b8d0c6-8b78-46f1-9b13-f7a34c4a8d51",
+        "section": "Math",
+        "prompt": "Solve for x: 3(x − 2) = 15",
+        "choices": ["3", "5", "7", "9"],
+        "correctChoiceIndex": 2,
+        "explanation": "Distribute: 3x − 6 = 15. Add 6 to both sides: 3x = 21. Divide by 3: x = 7."
+      },
+      {
+        "id": "7aa1a02f-8e7b-4a5b-85d9-5d9b6f0d7e67",
+        "section": "Math",
+        "prompt": "If 2a + b = 11 and a − b = 1, what is the value of a?",
+        "choices": ["2", "4", "6", "8"],
+        "correctChoiceIndex": 1,
+        "explanation": "From a − b = 1, get b = a − 1. Substitute: 2a + (a − 1) = 11 ⇒ 3a − 1 = 11 ⇒ 3a = 12 ⇒ a = 4."
+      },
+      {
+        "id": "f0c68e1c-8365-4705-a8cf-76dbd94f7d6e",
+        "section": "Math",
+        "prompt": "A right triangle has legs of length 6 and 8. What is the length of the hypotenuse?",
+        "choices": ["9", "10", "12", "14"],
+        "correctChoiceIndex": 1,
+        "explanation": "Use the Pythagorean theorem: c = √(6² + 8²) = √(36 + 64) = √100 = 10."
+      },
+      {
+        "id": "b6b2a5d1-8c4a-4fd5-a4d2-9a30f01cbbd3",
+        "section": "Math",
+        "prompt": "A jacket’s price increases from $80 to $92. What is the percent increase?",
+        "choices": ["12.5%", "15%", "20%", "25%"],
+        "correctChoiceIndex": 1,
+        "explanation": "Increase = 92 − 80 = 12. Percent increase = 12/80 = 0.15 = 15%."
+      },
+      {
+        "id": "0b0d5f2b-9f2a-4c0a-bc41-7c58f2d8f3c2",
+        "section": "Math",
+        "prompt": "For the function f(x) = 2x + 5, what is f(3)?",
+        "choices": ["9", "10", "11", "12"],
+        "correctChoiceIndex": 2,
+        "explanation": "Substitute x = 3: f(3) = 2(3) + 5 = 6 + 5 = 11."
+      },
+      {
+        "id": "62d80b9f-f2d6-4b8e-9d49-bfcf0e3f2ac0",
+        "section": "ReadingWriting",
+        "prompt": "Choose the option that correctly completes the sentence:\\n\\nNeither the students nor the teacher ____ ready for the assembly.",
+        "choices": ["were", "was", "are", "have been"],
+        "correctChoiceIndex": 1,
+        "explanation": "With “neither…nor,” the verb typically agrees with the noun closest to it. “Teacher” is singular, so “was” is correct."
+      },
+      {
+        "id": "f4b7c7ff-0e1c-4d90-9f54-4cc8b4c6b7b2",
+        "section": "ReadingWriting",
+        "prompt": "Choose the best transition to complete the sentence:\\n\\nThe team practiced every day; ____, it still felt unprepared for the tournament.",
+        "choices": ["however", "therefore", "because", "similarly"],
+        "correctChoiceIndex": 0,
+        "explanation": "The second clause contrasts with the first (they practiced, but still felt unprepared). “However” signals contrast."
+      },
+      {
+        "id": "2f0bcd1a-baba-4b63-9a10-4c20c8b56f61",
+        "section": "ReadingWriting",
+        "prompt": "Choose the word that best completes the sentence:\\n\\nThe scientist’s findings were ____; they challenged a long-held theory.",
+        "choices": ["trivial", "routine", "provocative", "irrelevant"],
+        "correctChoiceIndex": 2,
+        "explanation": "If findings challenge a long-held theory, they are likely to provoke discussion or debate. “Provocative” fits that meaning."
+      },
+      {
+        "id": "5d1b9ad1-2d6f-4b69-9c9c-9a2f5c1d4e28",
+        "section": "ReadingWriting",
+        "prompt": "Choose the best way to combine the sentences:\\n\\nThe museum opened in 1920. It features modern art.",
+        "choices": [
+          "The museum opened in 1920, and it features modern art.",
+          "The museum, opened in 1920 it features modern art.",
+          "The museum opened in 1920; featuring modern art.",
+          "Opened in 1920 the museum it features modern art."
+        ],
+        "correctChoiceIndex": 0,
+        "explanation": "Choice A correctly combines two independent clauses using a comma + coordinating conjunction (and). The other options have grammatical issues."
+      },
+      {
+        "id": "a1a17f78-7355-4a5e-b6e0-9b8d7b4b19f4",
+        "section": "ReadingWriting",
+        "prompt": "Choose the option that best maintains the sentence’s meaning and clarity:\\n\\nLina wanted to join the debate club. ____ she was nervous about public speaking, she attended the first meeting anyway.",
+        "choices": ["Although", "Because", "For example", "Meanwhile"],
+        "correctChoiceIndex": 0,
+        "explanation": "The second clause contrasts with her nervousness (she still attended). “Although” signals that contrast."
+      }
+    ]
+  },
+  {
+    "id": "0f8a1b68-f5d3-4f93-aaf0-1e8b2c9d7c11",
+    "title": "SAT Mini Practice Test 2 (Original)",
+    "description": "Another set of 10 original practice questions (mixed sections).",
+    "createdAtUtc": "2025-12-14T00:00:00Z",
+    "questions": [
+      {
+        "id": "e7a3f0d2-5e4b-41c3-b9c0-0f6f6f9a1b10",
+        "section": "Math",
+        "prompt": "Which of the following is a solution to x² − 5x + 6 = 0?",
+        "choices": ["1", "2", "4", "6"],
+        "correctChoiceIndex": 1,
+        "explanation": "Factor: x² − 5x + 6 = (x − 2)(x − 3). Solutions are x = 2 or x = 3. So 2 is a solution."
+      },
+      {
+        "id": "d3b1b2b8-4f25-46d0-9d8b-2e9c9fd1f2a4",
+        "section": "Math",
+        "prompt": "In a recipe, the ratio of flour to sugar is 3:2. If the recipe uses 10 cups of sugar, how many cups of flour does it use?",
+        "choices": ["6", "12", "15", "20"],
+        "correctChoiceIndex": 2,
+        "explanation": "If 2 parts sugar = 10 cups, then 1 part = 5 cups. Flour is 3 parts, so 3 × 5 = 15 cups."
+      },
+      {
+        "id": "58a2f5d2-2b2a-4a9f-9c6d-10d1a89f1b2c",
+        "section": "Math",
+        "prompt": "Simplify: 2³ · 2⁴",
+        "choices": ["2⁷", "2¹²", "2¹", "2⁸"],
+        "correctChoiceIndex": 0,
+        "explanation": "When multiplying powers with the same base, add exponents: 2³ · 2⁴ = 2^(3+4) = 2⁷."
+      },
+      {
+        "id": "a4d2b9e0-7a3a-4a3f-9c93-8c3d12f4f6e2",
+        "section": "Math",
+        "prompt": "If g(x) = x² − 1, what is g(−3)?",
+        "choices": ["8", "−10", "10", "−8"],
+        "correctChoiceIndex": 0,
+        "explanation": "g(−3) = (−3)² − 1 = 9 − 1 = 8."
+      },
+      {
+        "id": "9a3c0b7d-2f4d-4c5b-8f1d-0d2a9a1c3e7f",
+        "section": "Math",
+        "prompt": "A circle has radius 5. What is its circumference?",
+        "choices": ["5π", "10π", "25π", "50π"],
+        "correctChoiceIndex": 1,
+        "explanation": "Circumference C = 2πr. With r = 5, C = 2π(5) = 10π."
+      },
+      {
+        "id": "6b6c2a4a-3b0d-4a1b-9f0c-2c9b3d8a7f10",
+        "section": "ReadingWriting",
+        "prompt": "Choose the option that correctly completes the sentence:\\n\\nEvery student must bring ____ laptop to class.",
+        "choices": ["their", "his", "her", "them"],
+        "correctChoiceIndex": 0,
+        "explanation": "“Every student” is singular, but modern English commonly uses singular “their” for clarity and inclusivity."
+      },
+      {
+        "id": "c2d0a7b9-8b7c-4d5a-9e2f-1f2a3b4c5d6e",
+        "section": "ReadingWriting",
+        "prompt": "Choose the best revision for concision and clarity:\\n\\nThe novel was popular among readers because it was interesting and had an exciting plot.",
+        "choices": [
+          "The novel was popular among readers because it was interesting and had an exciting plot.",
+          "The novel was popular among readers because it had an exciting plot.",
+          "The novel, popular among readers, because exciting plot and interesting.",
+          "The novel was popular among readers, it had an exciting plot because interesting."
+        ],
+        "correctChoiceIndex": 1,
+        "explanation": "Choice B removes redundancy: “interesting” overlaps with “exciting plot,” so keeping the stronger detail is clearer."
+      },
+      {
+        "id": "0c3a9f2d-1a2b-4c3d-8e9f-0a1b2c3d4e5f",
+        "section": "ReadingWriting",
+        "prompt": "Choose the option that best fixes parallel structure:\\n\\nThe workshop teaches participants to plan projects, managing time, and communicate clearly.",
+        "choices": [
+          "The workshop teaches participants to plan projects, managing time, and communicate clearly.",
+          "The workshop teaches participants to plan projects, to manage time, and communicate clearly.",
+          "The workshop teaches participants to plan projects, manage time, and communicate clearly.",
+          "The workshop teaches participants to plan projects, manage time, and communicating clearly."
+        ],
+        "correctChoiceIndex": 2,
+        "explanation": "Items in a list should match form. “Plan,” “manage,” and “communicate” are parallel verbs (choice C)."
+      },
+      {
+        "id": "7f2a1b3c-4d5e-4f6a-8b9c-0d1e2f3a4b5c",
+        "section": "ReadingWriting",
+        "prompt": "Choose the best transition to complete the sentence:\\n\\nThe city expanded its bike lanes in 2023. ____, traffic congestion remained high.",
+        "choices": ["However", "Therefore", "For example", "Similarly"],
+        "correctChoiceIndex": 0,
+        "explanation": "The second sentence contrasts with the first (expansion didn’t reduce congestion). “However” signals contrast."
+      },
+      {
+        "id": "1a2b3c4d-5e6f-4a3b-8c9d-0e1f2a3b4c5d",
+        "section": "ReadingWriting",
+        "prompt": "Choose the option that correctly completes the sentence:\\n\\nThe list of items on the desk ____ longer than expected.",
+        "choices": ["seem", "seems", "are seeming", "were seeming"],
+        "correctChoiceIndex": 1,
+        "explanation": "The subject is “list,” which is singular, so the correct verb is “seems.”"
+      }
+    ]
+  }
+]
