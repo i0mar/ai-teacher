@@ -30,6 +30,13 @@ public sealed class AiTeacherService : IAiTeacherService
 
         if (!IsOpenAiEnabled())
         {
+            var t = topic.ToLowerInvariant();
+            var isSystem = t.Contains("system");
+            var isLinear = t.Contains("linear") || t.Contains("slope") || t.Contains("intercept");
+            var isPercent = t.Contains("percent") || t.Contains("unit rate") || t.Contains("rate");
+            var isTriangle = t.Contains("triangle") || t.Contains("pythagorean");
+            var isGraphs = t.Contains("graph") || t.Contains("graphs") || t.Contains("table") || t.Contains("tables");
+
             var fallbackNarration =
                 $"Today we're learning: {topic}.\n\n" +
                 "We'll do this like a real SAT lesson:\n" +
@@ -37,20 +44,92 @@ public sealed class AiTeacherService : IAiTeacherService
                 "2) Two examples\n" +
                 "3) Mini-quiz\n" +
                 "4) Common traps\n\n" +
-                "Grab a pencil — I'll write the key steps on the board as we go.";
+                "Grab a pencil — I'll write the key steps (and a quick diagram if helpful) on the board as we go.";
 
-            var fallbackBoard = CleanBoardLines(new[]
+            var fallbackLines = new List<string> { $"TOPIC: {topic}" };
+
+            if (isTriangle)
             {
-                $"TOPIC: {topic}",
-                "Goal: recognize the pattern",
-                "Rule: write the key formula",
-                "Example 1: set up the equation",
-                "Example 1: solve step-by-step",
-                "Example 2: same idea, new numbers",
-                "Mini-quiz: try it yourself",
-                "Trap: watch signs/units",
-                "Takeaway: method > memorizing"
-            });
+                fallbackNarration +=
+                    "\n\nExample focus: a classic right triangle using the Pythagorean theorem.";
+                fallbackLines.AddRange(new[]
+                {
+                    "Pythagorean theorem: a^2 + b^2 = c^2",
+                    "Example: a=3, b=4",
+                    "c^2 = 3^2 + 4^2 = 9 + 16 = 25",
+                    "c = 5",
+                    "DRAW: triangle right 3 4 5",
+                    "Mini-quiz: a=5, b=12, find c",
+                    "Answer: c^2=25+144=169 -> c=13",
+                    "Trap: don't forget to sqrt at the end"
+                });
+            }
+            else if (isPercent)
+            {
+                fallbackNarration +=
+                    "\n\nExample focus: percent change and comparing values quickly.";
+                fallbackLines.AddRange(new[]
+                {
+                    "Percent change = (new - old) / old",
+                    "Example: old=50, new=60",
+                    "(60-50)/50 = 10/50 = 0.2 = 20%",
+                    "DRAW: bar Old=50 New=60",
+                    "Unit rate = total / units",
+                    "Example: $12 for 4 items -> $3/item",
+                    "Trap: keep units with your numbers"
+                });
+            }
+            else if (isSystem)
+            {
+                fallbackNarration +=
+                    "\n\nExample focus: two lines that intersect (a system).";
+                fallbackLines.AddRange(new[]
+                {
+                    "System: y = 2x + 1 and y = -x + 7",
+                    "Set equal: 2x+1 = -x+7",
+                    "3x = 6 -> x = 2",
+                    "y = 2(2)+1 = 5",
+                    "Solution: (2, 5)",
+                    "DRAW: axes x=-1..6 y=0..8",
+                    "DRAW: line y=2x+1",
+                    "DRAW: line y=-x+7",
+                    "DRAW: point (2,5) label=(2,5)",
+                    "Trap: check in BOTH equations"
+                });
+            }
+            else if (isLinear || isGraphs)
+            {
+                fallbackNarration +=
+                    "\n\nExample focus: connecting an equation to its graph.";
+                fallbackLines.AddRange(new[]
+                {
+                    "Slope-intercept form: y = mx + b",
+                    "Example line: y = 2x + 1",
+                    "Pick x: 0 -> y=1",
+                    "Pick x: 3 -> y=7",
+                    "DRAW: axes x=-2..8 y=-2..10",
+                    "DRAW: line y=2x+1",
+                    "DRAW: point (0,1) label=(0,1)",
+                    "DRAW: point (3,7) label=(3,7)",
+                    "Trap: slope is rise/run, not just 'the bigger number'"
+                });
+            }
+            else
+            {
+                fallbackLines.AddRange(new[]
+                {
+                    "Goal: recognize the pattern",
+                    "Rule: write the key formula",
+                    "Example 1: set up the problem",
+                    "Example 1: solve step-by-step",
+                    "Example 2: same idea, new numbers",
+                    "Mini-quiz: try it yourself",
+                    "Trap: watch signs/units",
+                    "Takeaway: method > memorizing"
+                });
+            }
+
+            var fallbackBoard = CleanBoardLines(fallbackLines);
 
             return new AiVideoPack(fallbackNarration, fallbackBoard, EvenTimings(fallbackBoard.Count));
         }
@@ -60,8 +139,39 @@ public sealed class AiTeacherService : IAiTeacherService
             "Write in a friendly spoken voice and include what to write on a whiteboard. " +
             "Avoid referencing copyrighted SAT questions. Return plain text only (no markdown).";
 
+        var t2 = topic.ToLowerInvariant();
+        var needsGraph = t2.Contains("graph") || t2.Contains("graphs") || t2.Contains("table") || t2.Contains("tables");
+        var needsSystem = t2.Contains("system");
+        var needsLinear = t2.Contains("linear") || t2.Contains("slope") || t2.Contains("intercept");
+        var needsPercent = t2.Contains("percent") || t2.Contains("unit rate") || t2.Contains("rate");
+        var needsTriangle = t2.Contains("triangle") || t2.Contains("pythagorean");
+
+        var diagramRequirement =
+            needsTriangle
+                ? "- Diagram requirement (required): include a right-triangle diagram AND point at it while explaining.\n" +
+                  "  - DRAW: triangle right; legs a,b; hypotenuse c\n" +
+                  "  - DRAW: focus hyp\n"
+                : needsPercent
+                    ? "- Diagram requirement (required): include a bar chart AND point to a bar while explaining.\n" +
+                      "  - DRAW: bar Old=50 New=60\n" +
+                      "  - DRAW: focus bar New\n"
+                    : needsSystem
+                        ? "- Diagram requirement (required): include a coordinate graph of your worked example system AND point to the intersection.\n" +
+                          "  - DRAW: axes x=-5..5 y=-5..5\n" +
+                          "  - DRAW: line y=2x+1\n" +
+                          "  - DRAW: line y=-x+7\n" +
+                          "  - DRAW: point (2,5) label=(2,5)\n" +
+                          "  - DRAW: focus (2,5)\n"
+                        : (needsLinear || needsGraph)
+                            ? "- Diagram requirement (required): include a coordinate graph of your worked example line AND point to a key point.\n" +
+                              "  - DRAW: axes x=-5..5 y=-5..5\n" +
+                              "  - DRAW: line y=2x+1\n" +
+                              "  - DRAW: point (0,1) label=(0,1)\n" +
+                              "  - DRAW: focus (0,1)\n"
+                            : "";
+
         var userPrompt =
-            $"Create a 3–5 minute SAT lesson script on this topic:\n\n{topic}\n\n" +
+            $"Create a ~6–8 minute SAT lesson script on this topic:\n\n{topic}\n\n" +
             "Output format EXACTLY:\n" +
             "NARRATION:\n" +
             "(spoken lesson script)\n\n" +
@@ -76,7 +186,27 @@ public sealed class AiTeacherService : IAiTeacherService
             "Requirements:\n" +
             "- Narration: start with a 1-sentence hook, teach with 2 small examples, include a 2-question mini-quiz + answers, end with 3 takeaways + 2 common mistakes.\n" +
             "- Narration should occasionally say things like \"Let's write this\" or \"On the board\".\n" +
-            "- Whiteboard: 10–16 short lines, max ~56 characters each, using ASCII math (no LaTeX), showing the steps/formulas you'll write.\n" +
+            "- If you use DRAW steps, explicitly switch between the text board and the diagram (e.g., \"On the left...\" then \"On the graph...\").\n" +
+            "- Whiteboard: 12–18 total lines (including DRAW), max ~56 chars for text lines, using ASCII math (no LaTeX).\n" +
+            "- Interleave: go back-and-forth between text steps and diagram steps (don't dump all DRAW lines at the end).\n" +
+            "- If you include a diagram, include at least 2 \"DRAW: focus ...\" lines at different moments to point while you explain.\n" +
+            "- The diagram panel shows ONE diagram at a time. If you switch to a new diagram (axes/bar/triangle), add \"DRAW: clear\" first.\n" +
+            "- Only use \"DRAW: focus ...\" on something you already drew earlier (or draw it immediately before focusing).\n" +
+            "- If you say \"plot\" or mention specific points/lines/bars in text, include matching DRAW commands (e.g., \"DRAW: point (1,2) label=P\").\n" +
+            diagramRequirement +
+            "- Optional diagrams: if a quick graph/diagram helps, include 1–4 WHITEBOARD lines that start with \"DRAW:\" (these still need timings). Examples:\n" +
+            "  - DRAW: axes x=-5..5 y=-5..5\n" +
+            "  - DRAW: line y=2x+1\n" +
+            "  - DRAW: point (3,7) label=(3,7)\n" +
+            "  - DRAW: bar A=2 B=5 C=3\n" +
+            "  - DRAW: triangle right 3 4 5\n" +
+            "  - DRAW: triangle right; legs a,b; hypotenuse c\n" +
+            "  - DRAW: focus (3,7)\n" +
+            "  - DRAW: focus bar New\n" +
+            "  - DRAW: focus hyp\n" +
+            "  - DRAW: focus right angle\n" +
+            "  - DRAW: clear\n" +
+            "- For DRAW lines, use ASCII only (use '-' not '−') and keep commands short (no full sentences).\n" +
             "- Timings: one number per whiteboard line (same count), strictly increasing, each between 0 and 1.\n" +
             "- Each timing is the approximate moment (as a fraction of the narration) when you want that line to start being written.\n" +
             "- Do NOT start writing a line before the narration reaches that step.\n";
@@ -137,6 +267,14 @@ public sealed class AiTeacherService : IAiTeacherService
             "- Narration: identify the correct answer (A/B/C/D), explain why, step-by-step, and mention common traps.\n" +
             "- Narration should reference writing steps (\"Let's write...\").\n" +
             "- Whiteboard: 6–12 short lines, max ~56 characters each, showing equations/steps.\n" +
+            "- Optional diagrams: if a quick graph/diagram helps, include 1–3 WHITEBOARD lines starting with \"DRAW:\" (still counted as lines and need timings). Use simple commands like:\n" +
+            "  - DRAW: axes x=-5..5 y=-5..5\n" +
+            "  - DRAW: line y=2x+1\n" +
+            "  - DRAW: point (3,7) label=(3,7)\n" +
+            "  - DRAW: bar A=2 B=5 C=3\n" +
+            "  - DRAW: triangle right 3 4 5\n" +
+            "  - DRAW: triangle right; legs a,b; hypotenuse c\n" +
+            "- For DRAW lines, use ASCII only (use '-' not '−') and keep commands short.\n" +
             "- Use ASCII math (no LaTeX).\n" +
             "- Timings: one number per whiteboard line (same count), strictly increasing, each between 0 and 1.\n" +
             "- Each timing is the approximate moment (as a fraction of the narration) when you want that line to start being written.\n" +
@@ -231,6 +369,8 @@ public sealed class AiTeacherService : IAiTeacherService
             "- Keep it brief: ~20–60 seconds spoken.\n" +
             $"- Whiteboard: 6–12 short lines, max ~56 characters each. First line MUST be exactly: {headerLine}\n" +
             "- Use ASCII math (no LaTeX).\n" +
+            "- Optional diagrams: if it helps, include 1–2 WHITEBOARD lines starting with \"DRAW:\" (still counted as lines and need timings).\n" +
+            "- For DRAW lines, use ASCII only (use '-' not '−') and keep commands short.\n" +
             "- Timings: one number per whiteboard line (same count), strictly increasing, each between 0 and 1.\n";
 
         var text = await _ai.CompleteAsync(systemPrompt, userPrompt, ct);
@@ -436,10 +576,14 @@ public sealed class AiTeacherService : IAiTeacherService
             if (line.Length == 0)
                 continue;
 
-            // Keep lines readable on the canvas.
-            const int maxChars = 56;
+            // Keep lines readable on the canvas (draw commands can be longer).
+            var isDraw =
+                line.StartsWith("DRAW:", StringComparison.OrdinalIgnoreCase) ||
+                line.StartsWith("DRAW ", StringComparison.OrdinalIgnoreCase) ||
+                line.StartsWith("DRAW-", StringComparison.OrdinalIgnoreCase);
+            var maxChars = isDraw ? 220 : 56;
             if (line.Length > maxChars)
-                line = line.Substring(0, maxChars - 1) + "…";
+                line = isDraw ? line.Substring(0, maxChars) : line.Substring(0, maxChars - 1) + "…";
 
             cleaned.Add(line);
 

@@ -41,3 +41,21 @@ Notes:
 - Generated exams: `App_Data/exams.generated.json`
 - Video jobs: `App_Data/videos.json`
 - Generated narration audio (if enabled): `wwwroot/generated/audio/`
+
+## Whiteboard graphs / drawings
+
+The “Watch” player can render simple diagrams on the whiteboard. Any whiteboard line that starts with `DRAW:` is treated as a drawing instruction (instead of text) and is rendered on the right side of the board.
+
+Examples:
+
+- `DRAW: axes x=-5..5 y=-5..5`
+- `DRAW: line y=2x+1`
+- `DRAW: point (3,7) label=(3,7)`
+- `DRAW: focus (3,7)`
+- `DRAW: bar Old=50 New=60`
+- `DRAW: focus bar New`
+- `DRAW: triangle right 3 4 5`
+- `DRAW: focus hyp`
+- `DRAW: clear`
+
+These `DRAW:` lines still count as whiteboard lines, so `BoardTimings` must include a matching timing entry for each one.

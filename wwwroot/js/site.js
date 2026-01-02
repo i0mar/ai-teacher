@@ -223,6 +223,8 @@ function wireAvatarVideoPlayer() {
   let mode = "lesson"; // "lesson" | "qa"
   let lessonBoardLines = [];
   let lessonBoardTimings = [];
+  let boardSteps = [];
+  let boardHasDraw = false;
   let qaPlayStart = 0;
   let qaElapsedSeconds = 0;
   let qaDurationSeconds = 0;
@@ -277,6 +279,27 @@ function wireAvatarVideoPlayer() {
   boardTimings = sanitizeTimings(boardTimings, boardLines.length);
   lessonBoardLines = Array.isArray(boardLines) ? boardLines.slice() : [];
   lessonBoardTimings = Array.isArray(boardTimings) ? boardTimings.slice() : [];
+
+  function rebuildBoardSteps() {
+    const steps = [];
+    let hasDraw = false;
+    const lines = Array.isArray(boardLines) ? boardLines : [];
+    for (const raw of lines) {
+      const s = String(raw || "").trim();
+      if (!s) continue;
+      const m = s.match(/^draw\b\s*[:\-]?\s*(.*)$/i);
+      if (m) {
+        hasDraw = true;
+        steps.push({ kind: "draw", command: String(m[1] || "").trim() });
+      } else {
+        steps.push({ kind: "text", text: s });
+      }
+    }
+    boardSteps = steps;
+    boardHasDraw = hasDraw;
+  }
+
+  rebuildBoardSteps();
 
   function estimateDurationSeconds() {
     // Rough estimate for spoken narration when audio duration isn't available.
@@ -476,19 +499,35 @@ function wireAvatarVideoPlayer() {
       }
 
       const lines = Array.isArray(boardLines) ? boardLines : [];
-      const timings = (Array.isArray(boardTimings) && boardTimings.length === lines.length)
+      const steps = Array.isArray(boardSteps) ? boardSteps : [];
+      const timings = (Array.isArray(boardTimings) && boardTimings.length === steps.length)
         ? boardTimings
-        : evenTimings(lines.length);
-      const total = lines.length;
+        : evenTimings(steps.length);
+      const total = steps.length;
       let activeLine = -1;
       for (let i = 0; i < total; i++) {
         if (progress >= timings[i]) activeLine = i;
       }
 
       const textPad = 22;
-      const x0 = board.x + textPad;
-      let y0 = board.y + textPad;
-      const maxWidth = board.w - textPad * 2;
+      const inner = {
+        x: board.x + textPad,
+        y: board.y + textPad,
+        w: board.w - textPad * 2,
+        h: board.h - textPad * 2
+      };
+
+      const gap = 18;
+      const textArea = boardHasDraw
+        ? { x: inner.x, y: inner.y, w: Math.floor(inner.w * 0.58), h: inner.h }
+        : { x: inner.x, y: inner.y, w: inner.w, h: inner.h };
+      const diagramArea = boardHasDraw
+        ? { x: inner.x + textArea.w + gap, y: inner.y, w: inner.w - textArea.w - gap, h: inner.h }
+        : null;
+
+      const x0 = textArea.x;
+      let y0 = textArea.y;
+      const maxWidth = textArea.w;
       const lineHeight = 30;
       ctx.fillStyle = "#111827";
       ctx.textAlign = "left";
@@ -496,7 +535,7 @@ function wireAvatarVideoPlayer() {
       ctx.font = "22px 'Bradley Hand', 'Segoe Print', 'Comic Sans MS', ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial";
 
       function drawLine(text, isPartial) {
-        if (y0 > board.y + board.h - textPad - lineHeight) return;
+        if (y0 > textArea.y + textArea.h - lineHeight) return;
         ctx.fillText(text, x0, y0, maxWidth);
         if (!isPartial) y0 += lineHeight;
       }
@@ -504,27 +543,781 @@ function wireAvatarVideoPlayer() {
       let penX = null;
       let penY = null;
 
-      for (let i = 0; i < activeLine && i < total; i++) drawLine(lines[i], false);
+      function normalizeDrawText(raw) {
+        return String(raw || "")
+          .replace(/\u00A0/g, " ")
+          .replace(/[−–—]/g, "-")
+          .replace(/[×]/g, "*");
+      }
 
+      function parseNumeric(raw) {
+        let s = normalizeDrawText(raw).trim();
+        if (!s) return null;
+        s = s.replace(/^[=:\s]+/, "").replace(/[,\s;]+$/, "");
+        if (!s) return null;
+        if (s.endsWith("%")) {
+          const v = parseNumeric(s.slice(0, -1));
+          return (v === null) ? null : v / 100;
+        }
+        const slash = s.indexOf("/");
+        if (slash > 0 && slash < s.length - 1) {
+          const a = parseFloat(s.slice(0, slash));
+          const b = parseFloat(s.slice(slash + 1));
+          if (Number.isFinite(a) && Number.isFinite(b) && b !== 0) return a / b;
+        }
+        const v = parseFloat(s);
+        return Number.isFinite(v) ? v : null;
+      }
+
+      function parseRange(raw) {
+        const s = normalizeDrawText(raw).trim();
+        if (!s) return null;
+
+        const dotdot = s.match(/([^\s]+)\s*\.\.\s*([^\s]+)/);
+        if (dotdot) {
+          const a = parseNumeric(dotdot[1]);
+          const b = parseNumeric(dotdot[2]);
+          if (a === null || b === null || a === b) return null;
+          return { min: Math.min(a, b), max: Math.max(a, b) };
+        }
+
+        const fromTo = s.match(/from\s+([^\s]+)\s+to\s+([^\s]+)/i);
+        if (fromTo) {
+          const a = parseNumeric(fromTo[1]);
+          const b = parseNumeric(fromTo[2]);
+          if (a === null || b === null || a === b) return null;
+          return { min: Math.min(a, b), max: Math.max(a, b) };
+        }
+
+        return null;
+      }
+
+      function parsePoint(raw) {
+        const s = normalizeDrawText(raw);
+
+        const m = s.match(/\(\s*([^,]+)\s*,\s*([^)]+)\s*\)/);
+        if (m) {
+          const x = parseNumeric(m[1]);
+          const y = parseNumeric(m[2]);
+          if (x === null || y === null) return null;
+          return { x, y };
+        }
+
+        const mx = s.match(/\bx\s*[:=]\s*([^\s,;]+)/i);
+        const my = s.match(/\by\s*[:=]\s*([^\s,;]+)/i);
+        if (mx && my) {
+          const x = parseNumeric(mx[1]);
+          const y = parseNumeric(my[1]);
+          if (x === null || y === null) return null;
+          return { x, y };
+        }
+
+        const m2 = s.trim().match(/^([^\s,;]+)[,\s]+([^\s,;]+)/);
+        if (m2) {
+          const x = parseNumeric(m2[1]);
+          const y = parseNumeric(m2[2]);
+          if (x === null || y === null) return null;
+          return { x, y };
+        }
+
+        return null;
+      }
+
+      function parseLineExpr(raw) {
+        let s0 = normalizeDrawText(raw).trim();
+        if (!s0) return null;
+        s0 = s0.replace(/\s+/g, "");
+
+        const lower0 = s0.toLowerCase();
+        const idxY = lower0.indexOf("y=");
+        const idxX = lower0.indexOf("x=");
+        if (idxY > 0 && (idxX < 0 || idxY < idxX)) s0 = s0.substring(idxY);
+        else if (idxX > 0) s0 = s0.substring(idxX);
+
+        // Strip trailing commentary like "(slope...)" or punctuation.
+        s0 = s0.replace(/[^0-9a-zA-Z+\-./=*]/g, "");
+
+        const s = s0.toLowerCase();
+        if (!s) return null;
+
+        if (s.startsWith("y=")) {
+          const rhs = s.slice(2);
+          if (!rhs) return null;
+          if (rhs.includes("x")) {
+            const parts = rhs.split("x");
+            const coefPart = parts[0] || "";
+            const constPart = parts.length > 1 ? (parts[1] || "") : "";
+            let m = null;
+            if (coefPart === "" || coefPart === "+") m = 1;
+            else if (coefPart === "-") m = -1;
+            else m = parseNumeric(coefPart);
+            if (m === null) return null;
+            let b = 0;
+            if (constPart) {
+              const parsedB = parseNumeric(constPart);
+              if (parsedB !== null) b = parsedB;
+            }
+            return { kind: "slopeIntercept", m, b };
+          }
+          const c = parseNumeric(rhs);
+          if (c === null) return null;
+          return { kind: "slopeIntercept", m: 0, b: c };
+        }
+        if (s.startsWith("x=")) {
+          const x = parseNumeric(s.slice(2));
+          if (x === null) return null;
+          return { kind: "vertical", x };
+        }
+
+        // Support simple general form like "2x+y=11" or "2x-y=4".
+        if (s.includes("=") && s.includes("x") && s.includes("y")) {
+          const parts = s.split("=");
+          if (parts.length === 2) {
+            const parseSide = (expr) => {
+              const terms = String(expr || "").match(/[+\-]?[^+\-]+/g) || [];
+              let xCoef = 0;
+              let yCoef = 0;
+              let cst = 0;
+              for (const rawTerm of terms) {
+                let t = String(rawTerm || "").trim();
+                if (!t) continue;
+                t = t.replace(/\*/g, "");
+                if (t.endsWith("x")) {
+                  const coefPart = t.slice(0, -1);
+                  let coef = null;
+                  if (coefPart === "" || coefPart === "+") coef = 1;
+                  else if (coefPart === "-") coef = -1;
+                  else coef = parseNumeric(coefPart);
+                  if (coef !== null) xCoef += coef;
+                } else if (t.endsWith("y")) {
+                  const coefPart = t.slice(0, -1);
+                  let coef = null;
+                  if (coefPart === "" || coefPart === "+") coef = 1;
+                  else if (coefPart === "-") coef = -1;
+                  else coef = parseNumeric(coefPart);
+                  if (coef !== null) yCoef += coef;
+                } else {
+                  const v = parseNumeric(t);
+                  if (v !== null) cst += v;
+                }
+              }
+              return { xCoef, yCoef, cst };
+            };
+
+            const left = parseSide(parts[0]);
+            const right = parseSide(parts[1]);
+            const xCoef = left.xCoef - right.xCoef;
+            const yCoef = left.yCoef - right.yCoef;
+            const cst = left.cst - right.cst;
+
+            if (Math.abs(yCoef) > 1e-9) {
+              return { kind: "slopeIntercept", m: -(xCoef / yCoef), b: -(cst / yCoef) };
+            }
+            if (Math.abs(xCoef) > 1e-9) {
+              return { kind: "vertical", x: -(cst / xCoef) };
+            }
+          }
+        }
+        return null;
+      }
+
+      function renderCartesianAxes(c, area, axes) {
+        const pad = 18;
+        const xmin = axes.xmin;
+        const xmax = axes.xmax;
+        const ymin = axes.ymin;
+        const ymax = axes.ymax;
+        const iw = Math.max(10, area.w - pad * 2);
+        const ih = Math.max(10, area.h - pad * 2);
+
+        const mapX = (x) => area.x + pad + ((x - xmin) / (xmax - xmin)) * iw;
+        const mapY = (y) => area.y + area.h - pad - ((y - ymin) / (ymax - ymin)) * ih;
+
+        const niceStep = (span) => {
+          const s = Math.abs(span);
+          if (s <= 6) return 1;
+          if (s <= 12) return 2;
+          if (s <= 30) return 5;
+          return 10;
+        };
+
+        const xStep = niceStep(xmax - xmin);
+        const yStep = niceStep(ymax - ymin);
+
+        c.save();
+        c.lineWidth = 1;
+        c.strokeStyle = "rgba(17,24,39,0.08)";
+        c.beginPath();
+        for (let x = Math.ceil(xmin / xStep) * xStep; x <= xmax; x += xStep) {
+          const px = mapX(x);
+          c.moveTo(px, area.y + 10);
+          c.lineTo(px, area.y + area.h - 10);
+        }
+        for (let y = Math.ceil(ymin / yStep) * yStep; y <= ymax; y += yStep) {
+          const py = mapY(y);
+          c.moveTo(area.x + 10, py);
+          c.lineTo(area.x + area.w - 10, py);
+        }
+        c.stroke();
+
+        const xAxisY = (ymin <= 0 && ymax >= 0) ? mapY(0) : mapY(ymin);
+        const yAxisX = (xmin <= 0 && xmax >= 0) ? mapX(0) : mapX(xmin);
+
+        c.lineWidth = 2.5;
+        c.strokeStyle = "rgba(17,24,39,0.55)";
+        c.beginPath();
+        c.moveTo(area.x + 10, xAxisY);
+        c.lineTo(area.x + area.w - 10, xAxisY);
+        c.moveTo(yAxisX, area.y + 10);
+        c.lineTo(yAxisX, area.y + area.h - 10);
+        c.stroke();
+
+        c.fillStyle = "rgba(17,24,39,0.70)";
+        c.font = "16px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial";
+        c.textAlign = "right";
+        c.textBaseline = "top";
+        c.fillText("x", area.x + area.w - 12, xAxisY + 6);
+        c.textAlign = "left";
+        c.textBaseline = "top";
+        c.fillText("y", yAxisX + 6, area.y + 12);
+        c.restore();
+
+        return { mapX, mapY };
+      }
+
+      function renderDiagram(c, area, stepsArr, activeIdx, activeT) {
+        if (!area) return { penX: null, penY: null };
+
+        const bgPad = 10;
+        const bg = { x: area.x - bgPad, y: area.y - bgPad, w: area.w + bgPad * 2, h: area.h + bgPad * 2 };
+
+        function resetLayer() {
+          c.save();
+          c.clearRect(bg.x, bg.y, bg.w, bg.h);
+          c.fillStyle = "rgba(255,255,255,0.92)";
+          roundedRectPath(c, bg.x, bg.y, bg.w, bg.h, 14);
+          c.fill();
+          c.strokeStyle = "rgba(17,24,39,0.10)";
+          c.lineWidth = 2;
+          roundedRectPath(c, bg.x, bg.y, bg.w, bg.h, 14);
+          c.stroke();
+          c.restore();
+        }
+
+        resetLayer();
+
+        let mode = "none"; // "none" | "cartesian" | "bar" | "triangle"
+        let axes = { xmin: -5, xmax: 5, ymin: -5, ymax: 5 };
+        let mapper = null;
+        let lastPen = { x: area.x + area.w * 0.5, y: area.y + area.h * 0.45 };
+        let barLayout = null;
+        let triangleLayout = null;
+        let activeFocusUnresolved = false;
+
+        function ensureCartesian() {
+          if (mode !== "cartesian") {
+            mode = "cartesian";
+            resetLayer();
+            mapper = renderCartesianAxes(c, area, axes);
+          } else if (!mapper) {
+            mapper = renderCartesianAxes(c, area, axes);
+          }
+        }
+
+        function extractAxisRange(cmd, axisChar) {
+          const s = normalizeDrawText(cmd);
+
+          const dotdot = s.match(new RegExp(`${axisChar}\\s*[:=]\\s*([^\\s,;]+\\s*\\.\\.\\s*[^\\s,;]+)`, "i"));
+          if (dotdot) return parseRange(dotdot[1]);
+
+          const fromTo = s.match(new RegExp(`${axisChar}\\s*[:=]?\\s*from\\s+([^\\s,;]+)\\s+to\\s+([^\\s,;]+)`, "i"));
+          if (fromTo) return parseRange(`from ${fromTo[1]} to ${fromTo[2]}`);
+
+          return null;
+        }
+
+        function setAxesFromCommand(cmd) {
+          const xr = extractAxisRange(cmd, "x");
+          if (xr) { axes.xmin = xr.min; axes.xmax = xr.max; }
+          const yr = extractAxisRange(cmd, "y");
+          if (yr) { axes.ymin = yr.min; axes.ymax = yr.max; }
+        }
+
+        function drawLineElement(expr, t) {
+          if (!mapper) return;
+          c.save();
+          c.lineCap = "round";
+          c.lineJoin = "round";
+          c.strokeStyle = "rgba(124,58,237,0.95)";
+          c.lineWidth = 4;
+          const clampT = Math.max(0, Math.min(1, t));
+
+          if (expr.kind === "vertical") {
+            const x = mapper.mapX(expr.x);
+            const y1 = area.y + 14;
+            const y2 = area.y + area.h - 14;
+            const yy = y1 + (y2 - y1) * clampT;
+            c.beginPath();
+            c.moveTo(x, y1);
+            c.lineTo(x, yy);
+            c.stroke();
+            lastPen = { x, y: yy };
+          } else {
+            const x1m = axes.xmin;
+            const x2m = axes.xmax;
+            const y1m = expr.m * x1m + expr.b;
+            const y2m = expr.m * x2m + expr.b;
+            const x1 = mapper.mapX(x1m);
+            const y1 = mapper.mapY(y1m);
+            const x2 = mapper.mapX(x2m);
+            const y2 = mapper.mapY(y2m);
+            const x = x1 + (x2 - x1) * clampT;
+            const y = y1 + (y2 - y1) * clampT;
+            c.beginPath();
+            c.moveTo(x1, y1);
+            c.lineTo(x, y);
+            c.stroke();
+            lastPen = { x, y };
+          }
+          c.restore();
+        }
+
+        function drawPoint(pt, label, t) {
+          if (!mapper) return;
+          const clampT = Math.max(0, Math.min(1, t));
+          const x = mapper.mapX(pt.x);
+          const y = mapper.mapY(pt.y);
+          c.save();
+          c.globalAlpha = 0.2 + 0.8 * clampT;
+          c.fillStyle = "rgba(17,24,39,0.92)";
+          c.beginPath();
+          c.arc(x, y, 6, 0, Math.PI * 2);
+          c.fill();
+          c.restore();
+          lastPen = { x, y };
+
+          if (label) {
+            c.save();
+            c.globalAlpha = 0.2 + 0.8 * clampT;
+            c.fillStyle = "rgba(17,24,39,0.80)";
+            c.font = "16px 'Bradley Hand', 'Segoe Print', 'Comic Sans MS', ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial";
+            c.textAlign = "left";
+            c.textBaseline = "bottom";
+            c.fillText(label, x + 8, y - 6, area.w - 12);
+            c.restore();
+          }
+        }
+
+        function drawBarChart(bars, t) {
+          const clampT = Math.max(0, Math.min(1, t));
+          mode = "bar";
+          resetLayer();
+
+          const pad = 18;
+          const innerW = Math.max(10, area.w - pad * 2);
+          const innerH = Math.max(10, area.h - pad * 2);
+          const x0 = area.x + pad;
+          const y0 = area.y + area.h - pad;
+          const maxV = Math.max(1e-6, ...bars.map((b) => Math.abs(b.value)));
+
+          c.save();
+          c.strokeStyle = "rgba(17,24,39,0.55)";
+          c.lineWidth = 2.5;
+          c.beginPath();
+          c.moveTo(x0, y0);
+          c.lineTo(x0 + innerW, y0);
+          c.stroke();
+
+          const n = bars.length;
+          const gapPx = Math.max(8, Math.floor(innerW * 0.04));
+          const barW = n > 0 ? Math.max(10, Math.floor((innerW - gapPx * (n - 1)) / n)) : innerW;
+
+          barLayout = { bars: [] };
+          for (let i = 0; i < n; i++) {
+            const b = bars[i];
+            const h = (Math.abs(b.value) / maxV) * (innerH - 38) * clampT;
+            const x = x0 + i * (barW + gapPx);
+            const y = y0 - h;
+            barLayout.bars.push({ label: String(b.label || ""), x, y, w: barW, h });
+            c.fillStyle = "rgba(124,58,237,0.55)";
+            roundedRectPath(c, x, y, barW, h, 10);
+            c.fill();
+            c.fillStyle = "rgba(17,24,39,0.82)";
+            c.font = "14px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial";
+            c.textAlign = "center";
+            c.textBaseline = "top";
+            c.fillText(b.label, x + barW / 2, y0 + 8, barW + 8);
+            lastPen = { x: x + barW / 2, y };
+          }
+
+          c.restore();
+        }
+
+        function drawRightTriangle(a, b, labels, t) {
+          const clampT = Math.max(0, Math.min(1, t));
+          mode = "triangle";
+          resetLayer();
+
+          const pad = 22;
+          const maxW = area.w - pad * 2;
+          const maxH = area.h - pad * 2;
+          const scale = Math.max(1e-6, Math.min(maxW / a, maxH / b) * 0.82);
+          const x0 = area.x + pad;
+          const y0 = area.y + area.h - pad;
+
+          const p0 = { x: x0, y: y0 };
+          const p1 = { x: x0 + a * scale, y: y0 };
+          const p2 = { x: x0 + a * scale, y: y0 - b * scale };
+          triangleLayout = { p0, p1, p2 };
+
+          const seg = (from, to, tt) => {
+            const x = from.x + (to.x - from.x) * tt;
+            const y = from.y + (to.y - from.y) * tt;
+            c.beginPath();
+            c.moveTo(from.x, from.y);
+            c.lineTo(x, y);
+            c.stroke();
+            lastPen = { x, y };
+          };
+
+          c.save();
+          c.strokeStyle = "rgba(124,58,237,0.95)";
+          c.lineWidth = 4;
+          c.lineCap = "round";
+          c.lineJoin = "round";
+
+          if (clampT < 1 / 3) {
+            seg(p0, p1, clampT * 3);
+          } else if (clampT < 2 / 3) {
+            seg(p0, p1, 1);
+            seg(p1, p2, (clampT - 1 / 3) * 3);
+          } else {
+            seg(p0, p1, 1);
+            seg(p1, p2, 1);
+            seg(p2, p0, (clampT - 2 / 3) * 3);
+          }
+
+          c.restore();
+
+          if (clampT > 0.9) {
+            const baseLabel = (labels && labels.base) ? String(labels.base) : String(a);
+            const heightLabel = (labels && labels.height) ? String(labels.height) : String(b);
+            const hypLabel = (labels && labels.hyp) ? String(labels.hyp) : null;
+            c.save();
+            c.fillStyle = "rgba(17,24,39,0.78)";
+            c.font = "16px 'Bradley Hand', 'Segoe Print', 'Comic Sans MS', ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial";
+            c.textAlign = "center";
+            c.textBaseline = "middle";
+            c.fillText(baseLabel, (p0.x + p1.x) / 2, p0.y + 14, maxW);
+            c.fillText(heightLabel, p1.x + 14, (p1.y + p2.y) / 2, maxW);
+            if (hypLabel) c.fillText(hypLabel, (p0.x + p2.x) / 2 - 6, (p0.y + p2.y) / 2 - 10, maxW);
+            c.restore();
+          }
+        }
+
+        function drawFocusRing(x, y, strength) {
+          const t = Math.max(0, Math.min(1, strength));
+          const pulse = 0.65 + 0.35 * Math.sin(performance.now() / 180);
+          const r = 12 + 10 * pulse;
+          c.save();
+          c.globalAlpha = 0.25 + 0.75 * t;
+          c.strokeStyle = "rgba(34,197,94,0.95)";
+          c.lineWidth = 4;
+          c.beginPath();
+          c.arc(x, y, r, 0, Math.PI * 2);
+          c.stroke();
+          c.fillStyle = "rgba(34,197,94,0.20)";
+          c.beginPath();
+          c.arc(x, y, Math.max(6, r * 0.45), 0, Math.PI * 2);
+          c.fill();
+          c.restore();
+        }
+
+        function focusBar(label, strength) {
+          if (!barLayout || !Array.isArray(barLayout.bars) || barLayout.bars.length === 0) return false;
+          const q = String(label || "").trim().toLowerCase();
+          if (!q) return false;
+
+          const found = barLayout.bars.find((b) => String(b.label || "").trim().toLowerCase() === q)
+            || barLayout.bars.find((b) => String(b.label || "").trim().toLowerCase().includes(q));
+          if (!found) return false;
+
+          const cx = found.x + found.w / 2;
+          const cy = found.y;
+          c.save();
+          c.globalAlpha = 0.25 + 0.75 * Math.max(0, Math.min(1, strength));
+          c.strokeStyle = "rgba(34,197,94,0.95)";
+          c.lineWidth = 4;
+          roundedRectPath(c, found.x - 4, found.y - 4, found.w + 8, found.h + 8, 12);
+          c.stroke();
+          c.restore();
+          drawFocusRing(cx, cy, strength);
+          lastPen = { x: cx, y: cy };
+          return true;
+        }
+
+        function focusTriangle(which, strength) {
+          if (!triangleLayout) return false;
+          const w = String(which || "").trim().toLowerCase();
+          const p0 = triangleLayout.p0;
+          const p1 = triangleLayout.p1;
+          const p2 = triangleLayout.p2;
+
+          if (w.includes("angle") || w.includes("corner") || w.includes("box") || w.includes("square")) {
+            const x = p1.x;
+            const y = p1.y;
+
+            c.save();
+            c.globalAlpha = 0.25 + 0.75 * Math.max(0, Math.min(1, strength));
+            c.strokeStyle = "rgba(34,197,94,0.95)";
+            c.lineWidth = 4;
+            c.beginPath();
+            const s = 16;
+            c.moveTo(x, y);
+            c.lineTo(x - s, y);
+            c.lineTo(x - s, y - s);
+            c.lineTo(x, y - s);
+            c.stroke();
+            c.restore();
+
+            drawFocusRing(x, y, strength);
+            lastPen = { x, y };
+            return true;
+          }
+
+          let a = p2;
+          let b = p0;
+          if (w.includes("base") || w === "a" || w.includes("leg a") || w.includes("leg1")) { a = p0; b = p1; }
+          else if (w.includes("height") || w === "b" || w.includes("leg b") || w.includes("leg2")) { a = p1; b = p2; }
+          else if (w.includes("hyp") || w === "c" || w.includes("hypotenuse")) { a = p2; b = p0; }
+
+          const mx = (a.x + b.x) / 2;
+          const my = (a.y + b.y) / 2;
+
+          c.save();
+          c.globalAlpha = 0.25 + 0.75 * Math.max(0, Math.min(1, strength));
+          c.strokeStyle = "rgba(34,197,94,0.95)";
+          c.lineWidth = 7;
+          c.lineCap = "round";
+          c.beginPath();
+          c.moveTo(a.x, a.y);
+          c.lineTo(b.x, b.y);
+          c.stroke();
+          c.restore();
+
+          drawFocusRing(mx, my, strength);
+          lastPen = { x: mx, y: my };
+          return true;
+        }
+
+        for (let i = 0; i <= activeIdx && i < stepsArr.length; i++) {
+          const step = stepsArr[i];
+          if (!step || step.kind !== "draw") continue;
+
+          const progressT = (i === activeIdx && step.kind === "draw") ? activeT : 1;
+          const cmd = normalizeDrawText(step.command).trim();
+          if (!cmd) continue;
+
+          const parts = cmd.split(/\s+/).filter(Boolean);
+          const op = (parts.length > 0 ? parts[0] : "").toLowerCase().replace(/[^a-z]/g, "");
+          const rest = parts.slice(1).join(" ");
+
+          if (op === "focus" || op === "highlight" || op === "pointat") {
+            if (i !== activeIdx) continue;
+
+            const strength = progressT;
+            const restNorm = normalizeDrawText(rest).trim();
+            const lower = restNorm.toLowerCase();
+            let resolved = false;
+
+            if (mode === "bar") {
+              const label = lower.startsWith("bar ") ? restNorm.slice(4).trim() : restNorm;
+              if (focusBar(label, strength)) { resolved = true; continue; }
+            }
+
+            if (mode === "triangle") {
+              const which = lower.replace(/^triangle\s+/, "").trim();
+              if (focusTriangle(which || "hyp", strength)) { resolved = true; continue; }
+            }
+
+            if (mode === "cartesian" && mapper) {
+              const cleaned = restNorm.replace(/^point\s+/i, "");
+              const pt = parsePoint(cleaned);
+              if (pt) {
+                // Ensure there's something visible where we're pointing.
+                drawPoint(pt, null, Math.max(0.6, Math.min(1, strength)));
+
+                const x = mapper.mapX(pt.x);
+                const y = mapper.mapY(pt.y);
+                drawFocusRing(x, y, strength);
+                lastPen = { x, y };
+                resolved = true;
+                continue;
+              }
+
+              const expr = parseLineExpr(restNorm);
+              if (expr && expr.kind === "slopeIntercept") {
+                // Draw a little of the line so the focus isn't "empty".
+                drawLineElement(expr, Math.max(0.4, Math.min(1, strength)));
+
+                const px = mapper.mapX(0);
+                const py = mapper.mapY(expr.b);
+                drawFocusRing(px, py, strength);
+                lastPen = { x: px, y: py };
+                resolved = true;
+                continue;
+              }
+            }
+
+            if (!resolved) {
+              // If we can't resolve what to focus, don't point at "nothing".
+              activeFocusUnresolved = true;
+            }
+            continue;
+          }
+
+          if (op === "clear" || op === "reset") {
+            mode = "none";
+            mapper = null;
+            axes = { xmin: -5, xmax: 5, ymin: -5, ymax: 5 };
+            resetLayer();
+            continue;
+          }
+
+          if (op === "axes" || op === "axis" || op === "grid" || op === "plane" || op === "coordinate") {
+            mode = "cartesian";
+            setAxesFromCommand(rest);
+            resetLayer();
+            mapper = renderCartesianAxes(c, area, axes);
+            lastPen = { x: area.x + area.w * 0.5, y: area.y + area.h * 0.5 };
+            continue;
+          }
+
+          if (op === "line" || op === "graph" || op === "plot" || op === "sketch") {
+            ensureCartesian();
+            const expr = parseLineExpr(rest);
+            if (expr) drawLineElement(expr, progressT);
+            continue;
+          }
+
+          if (op === "point" || op === "dot") {
+            ensureCartesian();
+            const pt = parsePoint(rest);
+            const labelMatch = normalizeDrawText(rest).match(/label\s*[:=]\s*(.+)$/i);
+            const label = labelMatch ? String(labelMatch[1] || "").trim().replace(/^\"|\"$/g, "") : null;
+            if (pt) drawPoint(pt, label, progressT);
+            continue;
+          }
+
+          if (op === "bar" || op === "bars") {
+            const tokens = rest.split(/\s+/).filter(Boolean);
+            const bars = [];
+            for (const t of tokens) {
+              const eq = t.includes("=") ? t.indexOf("=") : t.indexOf(":");
+              if (eq <= 0) continue;
+              const label = t.slice(0, eq).trim();
+              const valueRaw = t.slice(eq + 1).trim();
+              const value = parseNumeric(valueRaw);
+              if (!label || value === null) continue;
+              bars.push({ label, value });
+            }
+            if (bars.length > 0) drawBarChart(bars, progressT);
+            continue;
+          }
+
+          if (op === "triangle") {
+            const cleaned = normalizeDrawText(rest).replace(/[;,]/g, " ").replace(/\s+/g, " ").trim();
+            const rawTokens = cleaned.split(" ").filter(Boolean);
+            const tokens = rawTokens.filter((t) => {
+              const k = t.toLowerCase().replace(/[^a-z]/g, "");
+              return k !== "right" && k !== "legs" && k !== "leg" && k !== "hypotenuse" && k !== "hyp" && k !== "and" && k !== "with";
+            });
+
+            const aNum = tokens.length > 0 ? parseNumeric(tokens[0]) : null;
+            const bNum = tokens.length > 1 ? parseNumeric(tokens[1]) : null;
+            const hypToken = tokens.length > 2 ? String(tokens[2]) : "";
+
+            const a = (aNum !== null && aNum > 0) ? aNum : 4;
+            const b = (bNum !== null && bNum > 0) ? bNum : 3;
+            const labels = {
+              base: (aNum !== null ? String(aNum) : (tokens[0] ? String(tokens[0]) : "a")),
+              height: (bNum !== null ? String(bNum) : (tokens[1] ? String(tokens[1]) : "b")),
+              hyp: hypToken ? hypToken : "c"
+            };
+
+            drawRightTriangle(a, b, labels, progressT);
+            continue;
+          }
+
+          // Fallback: try to infer common draw intents from the text.
+          const lowerCmd = cmd.toLowerCase();
+          if (lowerCmd.includes("..") && (lowerCmd.includes("x") || lowerCmd.includes("y"))) {
+            mode = "cartesian";
+            setAxesFromCommand(cmd);
+            resetLayer();
+            mapper = renderCartesianAxes(c, area, axes);
+            lastPen = { x: area.x + area.w * 0.5, y: area.y + area.h * 0.5 };
+            continue;
+          }
+
+          if (lowerCmd.includes("y=") || lowerCmd.includes("x=") || (lowerCmd.includes("=") && lowerCmd.includes("x") && lowerCmd.includes("y"))) {
+            ensureCartesian();
+            const expr = parseLineExpr(cmd);
+            if (expr) drawLineElement(expr, progressT);
+            continue;
+          }
+
+          if (lowerCmd.includes("(") && lowerCmd.includes(",") && lowerCmd.includes(")")) {
+            ensureCartesian();
+            const pt = parsePoint(cmd);
+            if (pt) drawPoint(pt, null, progressT);
+            continue;
+          }
+        }
+
+        return activeFocusUnresolved ? { penX: null, penY: null } : { penX: lastPen.x, penY: lastPen.y };
+      }
+
+      for (let i = 0; i < activeLine && i < total; i++) {
+        const step = steps[i];
+        if (!step) continue;
+        if (step.kind === "text") drawLine(step.text, false);
+      }
+
+      let activeLocal = 0;
+      let activeStep = null;
       if (activeLine >= 0 && activeLine < total) {
         const startAt = timings[activeLine];
         const endAt = (activeLine + 1 < total) ? timings[activeLine + 1] : 1.0;
-        const local = endAt > startAt ? (progress - startAt) / (endAt - startAt) : 1.0;
-        const line = lines[activeLine];
-        const count = Math.max(0, Math.min(line.length, Math.floor(line.length * Math.max(0, Math.min(1, local)))));
-        const partialText = count > 0 ? line.substring(0, count) : "";
-        drawLine(partialText, true);
+        activeLocal = endAt > startAt ? (progress - startAt) / (endAt - startAt) : 1.0;
+        activeLocal = Math.max(0, Math.min(1, activeLocal));
+        activeStep = steps[activeLine];
+        if (activeStep && activeStep.kind === "text") {
+          const line = activeStep.text;
+          const count = Math.max(0, Math.min(line.length, Math.floor(line.length * activeLocal)));
+          const partialText = count > 0 ? line.substring(0, count) : "";
+          drawLine(partialText, true);
 
-        // Cursor
-        if (partialText.length > 0) {
-          const metrics = ctx.measureText(partialText);
-          const cx = x0 + Math.min(metrics.width, maxWidth - 4);
-          const cy = y0;
-          ctx.fillStyle = "rgba(124,58,237,0.9)";
-          ctx.fillRect(cx, cy + 4, 6, 22);
-          ctx.fillStyle = "#111827";
-          penX = cx;
-          penY = cy + 16;
+          // Cursor
+          if (partialText.length > 0) {
+            const metrics = ctx.measureText(partialText);
+            const cx = x0 + Math.min(metrics.width, maxWidth - 4);
+            const cy = y0;
+            ctx.fillStyle = "rgba(124,58,237,0.9)";
+            ctx.fillRect(cx, cy + 4, 6, 22);
+            ctx.fillStyle = "#111827";
+            penX = cx;
+            penY = cy + 16;
+          }
+        }
+      }
+
+      // Diagram rendering (supports animated drawing while active)
+      if (diagramArea) {
+        const diagramPen = renderDiagram(ctx, diagramArea, steps, activeLine, activeLocal);
+        if (activeStep && activeStep.kind === "draw") {
+          penX = diagramPen.penX;
+          penY = diagramPen.penY;
         }
       }
 
@@ -746,6 +1539,7 @@ function wireAvatarVideoPlayer() {
     mode = "lesson";
     boardLines = lessonBoardLines.slice();
     boardTimings = lessonBoardTimings.slice();
+    rebuildBoardSteps();
   }
 
   function finishQa({ resumeLessonAfter } = { resumeLessonAfter: true }) {
@@ -792,6 +1586,7 @@ function wireAvatarVideoPlayer() {
 
     boardLines = qaLines;
     boardTimings = qaTimings;
+    rebuildBoardSteps();
     mode = "qa";
     qaElapsedSeconds = 0;
     qaDurationSeconds = estimateSpeechSeconds(narration, getSpeed());
