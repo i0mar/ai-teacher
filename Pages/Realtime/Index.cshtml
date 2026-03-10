@@ -1,0 +1,114 @@
+@page
+@model AiTeacher.Pages.Realtime.IndexModel
+@{
+    ViewData["Title"] = "Live Tutor";
+}
+
+<div
+    class="realtime-page"
+    data-realtime-root
+    data-connect-url="/api/realtime-lessons/connect"
+    data-board-sync-url="/api/realtime-lessons/board-sync"
+    data-realtime-available="@(Model.IsRealtimeAvailable ? "true" : "false")">
+    <section class="card realtime-primary">
+        <div class="realtime-primary-head">
+            <div class="realtime-primary-copy">
+                <div class="meta realtime-status-row">
+                    <span class="badge subtle" id="realtime-status" aria-live="polite">Disconnected</span>
+                    <span class="badge subtle" id="realtime-board-status">Waiting</span>
+                    <span class="badge subtle" id="realtime-live-indicator">Idle</span>
+                </div>
+                <h1>Live Tutor</h1>
+                <p class="lead realtime-lead">
+                    Start a real-time SAT lesson with live speech, live whiteboard writing, and interruptions at any moment.
+                </p>
+            </div>
+            <p class="muted small realtime-availability">@Model.AvailabilityMessage</p>
+        </div>
+        <div id="realtime-shell" class="avatar-shell realtime-board-shell">
+            <div class="avatar-stage realtime-lesson-stage">
+                <canvas
+                    id="realtime-canvas"
+                    class="whiteboard-canvas"
+                    width="960"
+                    height="540"
+                    tabindex="0"
+                    aria-label="Interactive live lesson whiteboard. Scroll to review earlier board text."></canvas>
+                <div class="realtime-captions-shell" aria-live="polite" aria-atomic="true">
+                    <div id="realtime-captions" class="realtime-captions" hidden></div>
+                </div>
+            </div>
+            <div class="player realtime-player">
+                <button class="btn primary" id="realtime-start" type="button" disabled="@(!Model.IsRealtimeAvailable)">Start live lesson</button>
+                <button class="btn" id="realtime-stop" type="button" disabled>End session</button>
+                <button class="btn" id="realtime-mic" type="button" disabled>Mute mic</button>
+                <button id="realtime-captions-toggle" type="button" class="btn" aria-pressed="true">Subtitles on</button>
+                <button id="realtime-fullscreen" type="button" class="btn">Fullscreen board</button>
+            </div>
+            <audio id="realtime-remote-audio" class="audio" controls autoplay playsinline></audio>
+        </div>
+    </section>
+
+    <section class="realtime-dashboard">
+        <div class="realtime-controls-stack">
+            <div class="card form realtime-topic-card">
+                <label class="label" for="realtime-topic">Lesson topic</label>
+                <input
+                    id="realtime-topic"
+                    class="input"
+                    value="Solving linear equations"
+                    placeholder="e.g., systems of equations, inference questions, percent change..." />
+                <p class="muted small realtime-topic-note">
+                    This mode is separate from the generated lesson/video flow. It responds in the moment instead of building a finished script first.
+                </p>
+                <p class="realtime-error" id="realtime-error" hidden></p>
+            </div>
+
+            <div class="card">
+                <h2>Suggested live topics</h2>
+                <ul class="topic-list">
+                    @foreach (var topic in Model.SuggestedTopics)
+                    {
+                        <li>
+                            <button type="button" class="pill" data-realtime-topic="@topic">@topic</button>
+                        </li>
+                    }
+                </ul>
+            </div>
+        </div>
+
+        <div class="realtime-side">
+            <div class="card realtime-panel">
+                <div class="realtime-panel-head">
+                    <h2>Conversation</h2>
+                </div>
+                <div class="realtime-thread" id="realtime-thread" aria-live="polite">
+                    <div class="realtime-thread-empty">Your conversation transcript will show up here.</div>
+                </div>
+            </div>
+
+            <div class="card realtime-panel">
+                <h2>Type to interrupt</h2>
+                <form id="realtime-text-form" class="form">
+                    <label class="label" for="realtime-text-input">Comment or question</label>
+                    <textarea
+                        id="realtime-text-input"
+                        class="input"
+                        rows="5"
+                        placeholder="Ask a question, push back on a step, or tell the tutor to slow down..."></textarea>
+                    <div class="actions">
+                        <button class="btn" id="realtime-send" type="submit" disabled>Send message</button>
+                    </div>
+                </form>
+                <p class="muted small">
+                    Voice interruptions use the mic. Typed interruptions cancel the current response and restart from your message.
+                </p>
+            </div>
+        </div>
+    </section>
+</div>
+
+@section Scripts {
+    <script src="~/js/realtime-whiteboard.js" asp-append-version="true"></script>
+    <script src="~/js/realtime-lessons.js" asp-append-version="true"></script>
+}

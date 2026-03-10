@@ -165,11 +165,13 @@ function wireAvatarVideoPlayer() {
   if (!canvas) return;
 
   const videoId = canvas.getAttribute("data-video-id");
-  const avatarUrl = canvas.getAttribute("data-avatar-url");
   const boardEl = document.getElementById("board-lines");
   const timingsEl = document.getElementById("board-timings");
+  const secondsEl = document.getElementById("board-seconds");
+  const timingPlanEl = document.getElementById("board-timing-plan");
   let boardLines = [];
   let boardTimings = [];
+  let boardTimestampSeconds = [];
   if (boardEl) {
     try {
       const parsed = JSON.parse(boardEl.textContent || "[]");
@@ -186,11 +188,21 @@ function wireAvatarVideoPlayer() {
       }
     } catch { /* ignore */ }
   }
+  if (secondsEl) {
+    try {
+      const parsed = JSON.parse(secondsEl.textContent || "[]");
+      if (Array.isArray(parsed)) {
+        boardTimestampSeconds = parsed;
+      }
+    } catch { /* ignore */ }
+  }
 
   const playBtn = document.getElementById("avatar-play");
   const stopBtn = document.getElementById("avatar-stop");
   const exportBtn = document.getElementById("avatar-export");
   const askBtn = document.getElementById("lesson-ask");
+  const fullscreenBtn = document.getElementById("avatar-fullscreen");
+  const qualitySelect = document.getElementById("avatar-quality");
   const understoodBtn = document.getElementById("qa-understood");
   const speed = document.getElementById("avatar-speed");
   const speedValue = document.getElementById("avatar-speed-value");
@@ -206,8 +218,8 @@ function wireAvatarVideoPlayer() {
   const qaError = document.getElementById("qa-error");
 
   const ctx = canvas.getContext("2d");
-  const img = new Image();
-  img.decoding = "async";
+  const stage = canvas.closest(".avatar-stage");
+  const fullscreenShell = document.getElementById("avatar-shell") || stage;
 
   let raf = 0;
   let lastLevel = 0;
@@ -219,10 +231,15 @@ function wireAvatarVideoPlayer() {
   let manualIsPaused = false;
   let manualIsPlaying = false;
   let manualUtterance = null;
+  let manualSpeechProgress = 0;
+  let manualSpeechCharIndex = 0;
+  let manualHasSpeechBoundary = false;
   let resumeAfterQa = false;
   let mode = "lesson"; // "lesson" | "qa"
   let lessonBoardLines = [];
   let lessonBoardTimings = [];
+  let lessonBoardTimestampSeconds = [];
+  let lessonStepSyncPlan = [];
   let boardSteps = [];
   let boardHasDraw = false;
   let qaPlayStart = 0;
@@ -231,24 +248,302 @@ function wireAvatarVideoPlayer() {
   let qaIsSpeaking = false;
   let qaUtterance = null;
   let qaAudio = null;
+  let qaSpeechProgress = 0;
+  let qaSpeechCharIndex = 0;
+  let qaHasSpeechBoundary = false;
+  let qaNarrationText = "";
+  let qaStepSyncPlan = [];
+  let stepSyncPlan = [];
+  let whiteboardOnly = true;
+  let qualityMode = "ultra";
+  let renderWidth = 960;
+  let renderHeight = 540;
+  let renderScale = 1;
+  let lessonSpeechTimeline = null;
+  let qaSpeechTimeline = null;
+  let boardTextViewport = null;
+  let boardScrollRows = 0;
+  let boardScrollMaxRows = 0;
+  let boardScrollbarViewport = null;
+  let boardScrollbarDrag = null;
   const scriptEl = document.getElementById("lesson-script");
   const scriptText = (scriptEl && scriptEl.textContent ? scriptEl.textContent : "").trim();
-  if (boardLines.length === 0 && scriptText) {
-    const rawLines = scriptText.split("\n").map((l) => l.trim()).filter((l) => l.length > 0);
-    const shortLines = rawLines.filter((l) => l.length <= 56).slice(0, 14);
-    if (shortLines.length > 0) {
-      boardLines = shortLines;
-    } else {
-      const sentences = scriptText
-        .replace(/\r\n/g, "\n")
-        .replace(/[!?]/g, ".")
-        .split(".")
-        .map((s) => s.trim())
-        .filter((s) => s.length >= 12 && s.length <= 56)
-        .slice(0, 14);
-      if (sentences.length > 0) boardLines = sentences;
+  const hasSpeechSynthesis = ("speechSynthesis" in window);
+
+  function useBoundaryLessonNarration() {
+    // If server narration audio exists, make it the single source of truth so
+    // browser controls and the custom Play button stay in lockstep.
+    return hasSpeechSynthesis && !audio && scriptText.length > 0;
+  }
+
+  function useBoundaryQaNarration(narrationText) {
+    return hasSpeechSynthesis && String(narrationText || "").trim().length > 0;
+  }
+
+  function setWhiteboardOnly() {
+    whiteboardOnly = true;
+  }
+
+  setWhiteboardOnly();
+
+  function clampBoardScrollRows(next) {
+    if (!Number.isFinite(next)) return 0;
+    const max = Math.max(0, Math.floor(boardScrollMaxRows));
+    return Math.max(0, Math.min(max, Math.round(next)));
+  }
+
+  function setBoardScrollRows(next) {
+    const clamped = clampBoardScrollRows(next);
+    if (clamped === boardScrollRows) return false;
+    boardScrollRows = clamped;
+    return true;
+  }
+
+  function resetBoardScroll() {
+    boardScrollRows = 0;
+    boardScrollMaxRows = 0;
+    boardScrollbarViewport = null;
+    boardScrollbarDrag = null;
+  }
+
+  function pointerToCanvasPoint(clientX, clientY) {
+    if (!Number.isFinite(clientX) || !Number.isFinite(clientY)) return null;
+    const rect = canvas.getBoundingClientRect();
+    return {
+      x: clientX - rect.left,
+      y: clientY - rect.top
+    };
+  }
+
+  function isPointerInBoardTextArea(clientX, clientY) {
+    if (!boardTextViewport) return false;
+    const point = pointerToCanvasPoint(clientX, clientY);
+    if (!point) return false;
+    const x = point.x;
+    const y = point.y;
+    return x >= boardTextViewport.x
+      && x <= boardTextViewport.x + boardTextViewport.w
+      && y >= boardTextViewport.y
+      && y <= boardTextViewport.y + boardTextViewport.h;
+  }
+
+  function isPointerInBoardScrollbar(clientX, clientY) {
+    if (!boardScrollbarViewport) return false;
+    const point = pointerToCanvasPoint(clientX, clientY);
+    if (!point) return false;
+    return point.x >= boardScrollbarViewport.hitX
+      && point.x <= boardScrollbarViewport.hitX + boardScrollbarViewport.hitW
+      && point.y >= boardScrollbarViewport.hitY
+      && point.y <= boardScrollbarViewport.hitY + boardScrollbarViewport.hitH;
+  }
+
+  function setBoardScrollFromScrollbarY(canvasY, grabOffset) {
+    if (!boardScrollbarViewport || boardScrollMaxRows <= 0) return false;
+    if (!Number.isFinite(canvasY)) return false;
+
+    const trackY = boardScrollbarViewport.trackY;
+    const travel = Math.max(1, boardScrollbarViewport.travel);
+    const offset = Number.isFinite(grabOffset) ? grabOffset : (boardScrollbarViewport.thumbH / 2);
+    const minThumbY = trackY;
+    const maxThumbY = trackY + travel;
+
+    let thumbY = canvasY - offset;
+    if (thumbY < minThumbY) thumbY = minThumbY;
+    if (thumbY > maxThumbY) thumbY = maxThumbY;
+
+    const downRatio = travel > 0 ? (thumbY - trackY) / travel : 0;
+    const nextRows = boardScrollMaxRows * (1 - downRatio);
+    return setBoardScrollRows(nextRows);
+  }
+
+  function clearScrollbarDrag(evt) {
+    if (!boardScrollbarDrag) return;
+    if (evt && Number.isFinite(evt.pointerId) && evt.pointerId !== boardScrollbarDrag.pointerId) return;
+
+    const activePointerId = boardScrollbarDrag.pointerId;
+    boardScrollbarDrag = null;
+
+    if (!Number.isFinite(activePointerId)) return;
+    try {
+      if (canvas.hasPointerCapture && canvas.hasPointerCapture(activePointerId))
+        canvas.releasePointerCapture(activePointerId);
+    } catch { /* ignore */ }
+  }
+
+  function handleBoardCanvasPointerDown(evt) {
+    if (!evt) return;
+    const inTextArea = isPointerInBoardTextArea(evt.clientX, evt.clientY);
+    const inScrollbar = isPointerInBoardScrollbar(evt.clientX, evt.clientY);
+    if (!inTextArea && !inScrollbar) return;
+
+    focusCanvasWithoutPageScroll();
+    if (!inScrollbar || !boardScrollbarViewport) return;
+
+    const point = pointerToCanvasPoint(evt.clientX, evt.clientY);
+    if (!point) return;
+
+    evt.preventDefault();
+    evt.stopPropagation();
+
+    const inThumb = point.x >= boardScrollbarViewport.thumbHitX
+      && point.x <= boardScrollbarViewport.thumbHitX + boardScrollbarViewport.thumbHitW
+      && point.y >= boardScrollbarViewport.thumbY
+      && point.y <= boardScrollbarViewport.thumbY + boardScrollbarViewport.thumbH;
+
+    if (inThumb) {
+      boardScrollbarDrag = {
+        pointerId: evt.pointerId,
+        grabOffset: point.y - boardScrollbarViewport.thumbY
+      };
+      try { canvas.setPointerCapture(evt.pointerId); } catch { /* ignore */ }
+      return;
+    }
+
+    if (setBoardScrollFromScrollbarY(point.y, boardScrollbarViewport.thumbH / 2))
+      refreshBoardFrame();
+
+    boardScrollbarDrag = {
+      pointerId: evt.pointerId,
+      grabOffset: boardScrollbarViewport.thumbH / 2
+    };
+    try { canvas.setPointerCapture(evt.pointerId); } catch { /* ignore */ }
+  }
+
+  function handleBoardCanvasPointerMove(evt) {
+    if (!evt || !boardScrollbarDrag || evt.pointerId !== boardScrollbarDrag.pointerId) return;
+    const point = pointerToCanvasPoint(evt.clientX, evt.clientY);
+    if (!point) return;
+
+    evt.preventDefault();
+    evt.stopPropagation();
+
+    if (setBoardScrollFromScrollbarY(point.y, boardScrollbarDrag.grabOffset))
+      refreshBoardFrame();
+  }
+
+  function handleBoardCanvasPointerUp(evt) {
+    if (!evt || !boardScrollbarDrag || evt.pointerId !== boardScrollbarDrag.pointerId) return;
+    evt.preventDefault();
+    evt.stopPropagation();
+    clearScrollbarDrag(evt);
+  }
+
+  function scrollBoardByWheelDelta(deltaY) {
+    if (!Number.isFinite(deltaY) || deltaY === 0 || boardScrollMaxRows <= 0) return false;
+    const rows = Math.max(1, Math.round(Math.abs(deltaY) / 44));
+    const direction = deltaY < 0 ? 1 : -1;
+    return setBoardScrollRows(boardScrollRows + direction * rows);
+  }
+
+  function handleBoardCanvasWheel(evt) {
+    if (!evt || !isPointerInBoardTextArea(evt.clientX, evt.clientY)) return;
+    // Keep wheel scrolling inside the whiteboard area from bubbling to page scroll.
+    evt.preventDefault();
+    evt.stopPropagation();
+    if (scrollBoardByWheelDelta(evt.deltaY)) refreshBoardFrame();
+  }
+
+  function handleBoardCanvasKeydown(evt) {
+    if (!evt || boardScrollMaxRows <= 0) return;
+
+    const pageRows = Math.max(
+      3,
+      Math.floor(((boardTextViewport && boardTextViewport.h) || 210) / ((boardTextViewport && boardTextViewport.lineHeight) || 30))
+    );
+
+    let next = null;
+    switch (evt.key) {
+      case "ArrowUp":
+        next = boardScrollRows + 1;
+        break;
+      case "ArrowDown":
+        next = boardScrollRows - 1;
+        break;
+      case "PageUp":
+        next = boardScrollRows + pageRows;
+        break;
+      case "PageDown":
+        next = boardScrollRows - pageRows;
+        break;
+      case "Home":
+        next = boardScrollMaxRows;
+        break;
+      case "End":
+        next = 0;
+        break;
+      default:
+        return;
+    }
+
+    evt.preventDefault();
+    if (setBoardScrollRows(next)) refreshBoardFrame();
+  }
+
+  function focusCanvasWithoutPageScroll() {
+    if (document.activeElement === canvas) return;
+    if (typeof canvas.focus !== "function") return;
+    try { canvas.focus({ preventScroll: true }); } catch { canvas.focus(); }
+  }
+
+  function readQualityFromUrl() {
+    return "ultra";
+  }
+
+  function setQualityMode(next, options) {
+    qualityMode = "ultra";
+    if (qualitySelect) qualitySelect.value = qualityMode;
+
+    ensureCanvasResolution(true);
+  }
+
+  function computeRenderScale() {
+    const dpr = Math.max(1, window.devicePixelRatio || 1);
+    if (qualityMode === "ultra") return Math.min(4, Math.max(2.5, dpr * 1.8));
+    if (qualityMode === "hd") return Math.min(3, Math.max(1.8, dpr * 1.35));
+    return Math.min(2.4, Math.max(1, dpr));
+  }
+
+  function ensureCanvasResolution(force) {
+    const host = stage || canvas;
+    const rect = host.getBoundingClientRect();
+    const cssW = Math.max(320, Math.round(rect.width || 960));
+    const cssH = Math.max(180, Math.round(rect.height || (cssW * 9 / 16)));
+    const scale = computeRenderScale();
+    const pxW = Math.max(1, Math.min(7680, Math.round(cssW * scale)));
+    const pxH = Math.max(1, Math.min(4320, Math.round(cssH * scale)));
+
+    renderWidth = cssW;
+    renderHeight = cssH;
+    renderScale = scale;
+
+    if (!force && canvas.width === pxW && canvas.height === pxH) return;
+    canvas.width = pxW;
+    canvas.height = pxH;
+  }
+
+  function isPlayerFullscreen() {
+    return !!(fullscreenShell && document.fullscreenElement === fullscreenShell);
+  }
+
+  function updateFullscreenButtonLabel() {
+    if (!fullscreenBtn) return;
+    fullscreenBtn.textContent = isPlayerFullscreen() ? "Exit fullscreen" : "Fullscreen board";
+  }
+
+  async function toggleBoardFullscreen() {
+    if (!fullscreenShell || !fullscreenShell.requestFullscreen) return;
+    if (isPlayerFullscreen()) {
+      await document.exitFullscreen();
+      return;
+    }
+    try {
+      await fullscreenShell.requestFullscreen();
+    } catch {
+      /* ignore */
     }
   }
+
+  setQualityMode(readQualityFromUrl(), { syncUrl: false });
 
   function evenTimings(count) {
     if (count <= 0) return [];
@@ -276,9 +571,55 @@ function wireAvatarVideoPlayer() {
     return out;
   }
 
-  boardTimings = sanitizeTimings(boardTimings, boardLines.length);
-  lessonBoardLines = Array.isArray(boardLines) ? boardLines.slice() : [];
-  lessonBoardTimings = Array.isArray(boardTimings) ? boardTimings.slice() : [];
+  function sanitizeTimestampSeconds(seconds, count) {
+    if (!Array.isArray(seconds) || seconds.length !== count) return [];
+    const out = [];
+    let prev = -1;
+    let max = -1;
+    let allWhole = true;
+    for (const raw of seconds) {
+      const v = (typeof raw === "number") ? raw : parseFloat(String(raw));
+      if (!Number.isFinite(v)) return [];
+      const clamped = Math.max(0, v);
+      if (clamped <= prev) return [];
+      if (!Number.isInteger(clamped)) allWhole = false;
+      if (clamped > max) max = clamped;
+      out.push(clamped);
+      prev = clamped;
+    }
+    const looksAbsolute = max > 1 || (out.length >= 2 && out[0] === 0 && out[out.length - 1] === 1 && allWhole);
+    return looksAbsolute ? out : [];
+  }
+
+  function resolveTimestampSeconds(seconds, count, durationSeconds) {
+    const out = sanitizeTimestampSeconds(seconds, count);
+    if (out.length !== count) return [];
+
+    const duration = Number.isFinite(durationSeconds) && durationSeconds > 0 ? durationSeconds : 0;
+    if (duration <= 0) return out;
+
+    const last = out[out.length - 1];
+    if (!Number.isFinite(last) || last <= 0) return [];
+
+    // Keep the last board line starting a little before the audio finishes,
+    // so short lessons do not run out of narration before the final writing.
+    const holdbackSeconds = Math.min(2.2, Math.max(0.8, duration * 0.08));
+    const targetLast = Math.max(0.35, duration - holdbackSeconds);
+    if (last <= targetLast) return out;
+
+    const scale = targetLast / last;
+    if (!Number.isFinite(scale) || scale <= 0) return [];
+
+    const scaled = [];
+    let prev = -0.05;
+    for (const raw of out) {
+      const adjusted = Math.max(prev + 0.05, Math.max(0, raw * scale));
+      scaled.push(adjusted);
+      prev = adjusted;
+    }
+
+    return scaled;
+  }
 
   function rebuildBoardSteps() {
     const steps = [];
@@ -299,13 +640,531 @@ function wireAvatarVideoPlayer() {
     boardHasDraw = hasDraw;
   }
 
+  function clamp01(v) {
+    if (!Number.isFinite(v)) return 0;
+    return Math.max(0, Math.min(1, v));
+  }
+
+  function looksEvenlySpaced(values) {
+    if (!Array.isArray(values) || values.length < 3) return true;
+    const diffs = [];
+    for (let i = 1; i < values.length; i++) diffs.push(values[i] - values[i - 1]);
+    const avg = diffs.reduce((sum, d) => sum + d, 0) / diffs.length;
+    if (!Number.isFinite(avg) || avg <= 0) return true;
+    let spread = 0;
+    for (const d of diffs) spread += Math.abs(d - avg);
+    return (spread / diffs.length) < 0.02;
+  }
+
+  function extractKeywords(text) {
+    const stop = new Set([
+      "the", "and", "then", "this", "that", "with", "from", "into", "your", "you", "our", "for", "are",
+      "was", "were", "have", "has", "had", "let", "lets", "write", "draw", "step", "line", "now", "onto",
+      "over", "about", "what", "when", "where", "why", "how", "all", "any", "can", "just", "than", "them"
+    ]);
+    const out = [];
+    const matches = String(text || "").toLowerCase().match(/[a-z0-9]+/g) || [];
+    for (const token of matches) {
+      if (token.length <= 1 || stop.has(token)) continue;
+      out.push(token);
+      if (out.length >= 6) break;
+    }
+    return out;
+  }
+
+  function tokenizeNarration(text) {
+    const tokens = [];
+    const src = String(text || "");
+    const re = /[A-Za-z0-9]+/g;
+    let m = re.exec(src);
+    while (m) {
+      tokens.push({ word: m[0].toLowerCase(), index: m.index });
+      m = re.exec(src);
+    }
+    return tokens;
+  }
+
+  function createSpeechTimeline(text) {
+    const src = String(text || "");
+    const n = src.length;
+    if (n <= 0) {
+      return {
+        length: 0,
+        progressAtCharIndex() { return 0; },
+        charIndexAtProgress() { return 0; }
+      };
+    }
+
+    const cumulative = new Float64Array(n + 1);
+    cumulative[0] = 0;
+    for (let i = 0; i < n; i++) {
+      const ch = src[i];
+      let w = 1.0;
+
+      if (ch === "\n") w = 4.0;
+      else if (ch === "." || ch === "!" || ch === "?") w = 3.6;
+      else if (ch === "," || ch === ";" || ch === ":") w = 2.2;
+      else if (/\s/.test(ch)) w = 0.24;
+      else if (/[0-9]/.test(ch)) w = 1.12;
+      else if (ch === "(" || ch === ")") w = 0.55;
+
+      cumulative[i + 1] = cumulative[i] + w;
+    }
+
+    const total = Math.max(1e-9, cumulative[n]);
+    return {
+      length: n,
+      progressAtCharIndex(charIndex) {
+        const idx = Math.max(0, Math.min(n, Math.floor(Number.isFinite(charIndex) ? charIndex : 0)));
+        return clamp01(cumulative[idx] / total);
+      },
+      charIndexAtProgress(progress) {
+        const p = clamp01(progress);
+        const target = total * p;
+        let lo = 0;
+        let hi = n;
+        while (lo < hi) {
+          const mid = Math.floor((lo + hi) / 2);
+          if (cumulative[mid] < target) lo = mid + 1;
+          else hi = mid;
+        }
+        return Math.max(0, Math.min(n, lo));
+      }
+    };
+  }
+
+  function timelineProgressAtChar(timeline, charIndex) {
+    if (timeline && typeof timeline.progressAtCharIndex === "function") {
+      return timeline.progressAtCharIndex(charIndex);
+    }
+    const n = (timeline && Number.isFinite(timeline.length) && timeline.length > 0) ? timeline.length : 1;
+    return clamp01(charIndex / n);
+  }
+
+  function timelineCharAtProgress(timeline, progress) {
+    if (timeline && typeof timeline.charIndexAtProgress === "function") {
+      return Math.max(0, Math.floor(timeline.charIndexAtProgress(progress)));
+    }
+    const n = (timeline && Number.isFinite(timeline.length) && timeline.length > 0) ? timeline.length : 1;
+    return Math.max(0, Math.min(n, Math.floor(clamp01(progress) * n)));
+  }
+
+  function normalizeForSearch(text) {
+    const src = String(text || "");
+    let normalized = "";
+    const sourceMap = [];
+    let pendingSpace = false;
+    let hasAny = false;
+
+    for (let i = 0; i < src.length; i++) {
+      const ch = src[i].toLowerCase();
+      if (/[a-z0-9]/.test(ch)) {
+        if (pendingSpace && hasAny) {
+          normalized += " ";
+          sourceMap.push(i);
+        }
+        normalized += ch;
+        sourceMap.push(i);
+        pendingSpace = false;
+        hasAny = true;
+      } else if (hasAny) {
+        pendingSpace = true;
+      }
+    }
+
+    return { normalized, sourceMap };
+  }
+
+  function extractSyncKeywords(text) {
+    const stop = new Set([
+      "the", "and", "then", "this", "that", "with", "from", "into", "your", "you", "our", "for", "are",
+      "was", "were", "have", "has", "had", "let", "lets", "write", "draw", "step", "line", "now", "onto",
+      "over", "about", "what", "when", "where", "why", "how", "all", "any", "can", "just", "than", "them",
+      "to", "of", "in", "on", "at", "by", "be", "as", "is", "it", "we", "us"
+    ]);
+    const keepSingles = new Set(["x", "y", "a", "b", "c", "m", "n"]);
+    const out = [];
+    const seen = new Set();
+    const matches = String(text || "").toLowerCase().match(/[a-z0-9]+/g) || [];
+    for (const token of matches) {
+      const isNumber = /[0-9]/.test(token);
+      if (!isNumber && token.length <= 1 && !keepSingles.has(token)) continue;
+      if (stop.has(token)) continue;
+      if (seen.has(token)) continue;
+      seen.add(token);
+      out.push(token);
+      if (out.length >= 8) break;
+    }
+    return out;
+  }
+
+  function findTokenIndexFrom(tokens, keyword, from) {
+    for (let i = Math.max(0, from || 0); i < tokens.length; i++) {
+      if (tokens[i].word === keyword) return i;
+    }
+    return -1;
+  }
+
+  function findKeywordWindow(tokens, keywords, fromTokenIndex) {
+    if (!Array.isArray(tokens) || tokens.length === 0) return null;
+    if (!Array.isArray(keywords) || keywords.length === 0) return null;
+
+    let first = -1;
+    let last = -1;
+    let cursor = Math.max(0, fromTokenIndex || 0);
+    let foundCount = 0;
+
+    for (const keyword of keywords) {
+      const idx = findTokenIndexFrom(tokens, keyword, cursor);
+      if (idx < 0) continue;
+      if (first < 0) first = idx;
+      last = idx;
+      cursor = idx + 1;
+      foundCount++;
+    }
+
+    if (first < 0 || last < 0 || foundCount <= 0) return null;
+    const minRequired = keywords.length >= 3 ? 2 : 1;
+    if (foundCount < minRequired) return null;
+
+    const start = tokens[first].index;
+    const end = tokens[last].index + tokens[last].word.length;
+    return {
+      startChar: start,
+      endChar: end,
+      nextTokenCursor: cursor
+    };
+  }
+
+  function isWriteCueToken(token) {
+    const t = String(token || "").toLowerCase();
+    return t === "write"
+      || t === "writing"
+      || t === "board"
+      || t === "draw"
+      || t === "drawing"
+      || t === "graph"
+      || t === "plot"
+      || t === "sketch";
+  }
+
+  function findCueBeforeChar(tokens, targetChar, maxDistanceChars) {
+    if (!Array.isArray(tokens) || tokens.length === 0) return -1;
+    const target = Math.max(0, Math.floor(Number.isFinite(targetChar) ? targetChar : 0));
+    const maxDist = Math.max(12, Math.floor(Number.isFinite(maxDistanceChars) ? maxDistanceChars : 140));
+    let best = -1;
+    for (let i = 0; i < tokens.length; i++) {
+      const tok = tokens[i];
+      if (!tok || !Number.isFinite(tok.index)) continue;
+      if (tok.index >= target) break;
+      if (!isWriteCueToken(tok.word)) continue;
+      if ((target - tok.index) > maxDist) continue;
+      best = tok.index;
+    }
+    return best;
+  }
+
+  function buildStepSyncPlan(narration, steps, timings, timeline) {
+    const safeSteps = Array.isArray(steps) ? steps : [];
+    const safeTimings = sanitizeTimings(timings, safeSteps.length);
+    if (safeSteps.length === 0) return [];
+
+    const text = String(narration || "");
+    const hasNarration = text.trim().length > 0;
+    const speechTimeline = timeline || createSpeechTimeline(text);
+    const maxChars = Math.max(1, (speechTimeline && Number.isFinite(speechTimeline.length)) ? speechTimeline.length : text.length);
+    const tokens = tokenizeNarration(text);
+    const normalizedNarration = normalizeForSearch(text);
+
+    let normCursor = 0;
+    let tokenCursor = 0;
+    let prevStart = 0;
+    const drawMinSpanChars = Math.max(10, Math.floor(maxChars * 0.007));
+    const drawMaxSpanChars = Math.max(drawMinSpanChars + 2, Math.floor(maxChars * 0.028));
+    const plan = [];
+
+    for (let i = 0; i < safeSteps.length; i++) {
+      const step = safeSteps[i] || {};
+      const startAt = safeTimings[i];
+      const endAt = (i + 1 < safeTimings.length) ? safeTimings[i + 1] : 1.0;
+
+      const timingStartChar = timelineCharAtProgress(speechTimeline, startAt);
+      const timingEndChar = timelineCharAtProgress(speechTimeline, endAt);
+      let startChar = timingStartChar;
+      let endChar = timingEndChar;
+      let shouldWrite = true;
+      let matched = false;
+
+      if (step.kind === "text") {
+        const textLine = String(step.text || "").trim();
+        if (hasNarration && textLine) {
+          const normalizedStep = normalizeForSearch(textLine).normalized;
+          if (normalizedStep.length >= 4 && normalizedNarration.normalized.length > 0) {
+            const idx = normalizedNarration.normalized.indexOf(normalizedStep, normCursor);
+            if (idx >= 0) {
+              const startMap = normalizedNarration.sourceMap[idx];
+              const endMapIdx = Math.min(normalizedNarration.sourceMap.length - 1, idx + normalizedStep.length - 1);
+              const endMap = normalizedNarration.sourceMap[endMapIdx];
+              if (Number.isFinite(startMap) && Number.isFinite(endMap)) {
+                startChar = startMap;
+                endChar = endMap + 1;
+                matched = true;
+                normCursor = idx + normalizedStep.length;
+                while (tokenCursor < tokens.length && tokens[tokenCursor].index < startChar) tokenCursor++;
+              }
+            }
+          }
+
+          if (!matched) {
+            const keywords = extractSyncKeywords(textLine);
+            const window = findKeywordWindow(tokens, keywords, tokenCursor);
+            if (window) {
+              startChar = window.startChar;
+              endChar = Math.max(window.endChar, startChar + 1);
+              tokenCursor = window.nextTokenCursor;
+              matched = true;
+            }
+          }
+
+          if (matched) {
+            const cueChar = findCueBeforeChar(tokens, startChar, 180);
+            if (cueChar >= 0) startChar = Math.min(startChar, cueChar);
+          }
+          // Keep essential text steps even when exact phrase matching fails.
+          // In that case we fall back to timing-based alignment instead of dropping the line.
+          if (!matched) {
+            const cueNearTiming = findCueBeforeChar(tokens, startChar, 120);
+            if (cueNearTiming >= 0) startChar = cueNearTiming;
+          }
+        }
+      } else if (step.kind === "draw" && hasNarration) {
+        const drawKeywords = extractSyncKeywords(step.command);
+        const drawWindow = findKeywordWindow(tokens, drawKeywords, tokenCursor);
+        if (drawWindow) {
+          const cueNearDraw = findCueBeforeChar(tokens, drawWindow.startChar, 42);
+          startChar = cueNearDraw >= 0 ? cueNearDraw : drawWindow.startChar;
+          endChar = Math.max(drawWindow.endChar, startChar + 1);
+          tokenCursor = drawWindow.nextTokenCursor;
+          matched = true;
+        } else {
+          // If we can't match draw details exactly, align to cue words near its planned timing.
+          const cueNearTiming = findCueBeforeChar(tokens, startChar, 120);
+          if (cueNearTiming >= 0) startChar = cueNearTiming;
+        }
+      }
+
+      if (!shouldWrite) {
+        plan.push({
+          startChar: prevStart,
+          endChar: prevStart,
+          startProgress: timelineProgressAtChar(speechTimeline, prevStart),
+          endProgress: timelineProgressAtChar(speechTimeline, prevStart),
+          shouldWrite: false,
+          matched
+        });
+        continue;
+      }
+
+      startChar = Math.max(0, Math.min(maxChars, Math.floor(startChar)));
+      endChar = Math.max(0, Math.min(maxChars, Math.ceil(endChar)));
+
+      // Keep cue/match adjustments near the model-provided timing window.
+      const startWindowBefore = step.kind === "draw" ? 18 : 30;
+      const startWindowAfter = step.kind === "draw" ? 52 : 72;
+      const minStartWindow = Math.max(0, timingStartChar - startWindowBefore);
+      const maxStartWindow = Math.min(maxChars, timingStartChar + startWindowAfter);
+      if (maxStartWindow >= minStartWindow)
+        startChar = Math.max(minStartWindow, Math.min(maxStartWindow, startChar));
+
+      if (startChar <= prevStart) startChar = Math.min(maxChars, prevStart + 1);
+
+      const textLen = step.kind === "text" ? Math.max(1, String(step.text || "").length) : 0;
+      const dynamicTextMinSpanChars = Math.max(4, Math.min(22, Math.floor(textLen * 0.45)));
+      const dynamicTextMaxSpanChars = Math.max(dynamicTextMinSpanChars + 4, Math.min(54, Math.floor(textLen * 1.8)));
+      const minSpan = step.kind === "draw" ? drawMinSpanChars : dynamicTextMinSpanChars;
+      if (endChar < startChar + minSpan)
+        endChar = startChar + minSpan;
+
+      const endWindowBefore = step.kind === "draw" ? 10 : 16;
+      const endWindowAfter = step.kind === "draw" ? 58 : 96;
+      const minEndWindow = Math.max(startChar + 1, timingEndChar - endWindowBefore);
+      const maxEndWindow = Math.min(maxChars, timingEndChar + endWindowAfter);
+      if (maxEndWindow >= minEndWindow)
+        endChar = Math.max(minEndWindow, Math.min(maxEndWindow, endChar));
+
+      if (step.kind === "draw" && endChar > startChar + drawMaxSpanChars)
+        endChar = startChar + drawMaxSpanChars;
+      if (step.kind === "text" && endChar > startChar + dynamicTextMaxSpanChars)
+        endChar = startChar + dynamicTextMaxSpanChars;
+
+      if (endChar > maxChars) endChar = maxChars;
+      if (endChar <= startChar) endChar = Math.min(maxChars, startChar + 1);
+      if (endChar <= startChar) startChar = Math.max(0, endChar - 1);
+
+      prevStart = Math.max(prevStart, startChar);
+
+      plan.push({
+        startChar,
+        endChar,
+        startProgress: timelineProgressAtChar(speechTimeline, startChar),
+        endProgress: timelineProgressAtChar(speechTimeline, endChar),
+        shouldWrite,
+        matched
+      });
+    }
+
+    return plan;
+  }
+
+  function inferTimingsFromNarration(narration, steps, fallbackTimings, timeline) {
+    const safeSteps = Array.isArray(steps) ? steps : [];
+    if (safeSteps.length === 0) return [];
+
+    const text = String(narration || "");
+    if (!text.trim()) return sanitizeTimings(fallbackTimings, safeSteps.length);
+    const tokens = tokenizeNarration(text);
+    if (tokens.length === 0) return sanitizeTimings(fallbackTimings, safeSteps.length);
+    const speechTimeline = timeline || createSpeechTimeline(text);
+
+    const totalChars = Math.max(1, text.length);
+    const positions = [];
+    let searchStart = 0;
+    let fallbackChar = Math.floor(totalChars * 0.07);
+    const fallbackGap = Math.max(1, Math.floor((totalChars * 0.88) / Math.max(1, safeSteps.length)));
+
+    const findTokenIndex = (keyword, from) => {
+      for (let i = Math.max(0, from); i < tokens.length; i++) {
+        if (tokens[i].word === keyword) return i;
+      }
+      return -1;
+    };
+
+    for (let i = 0; i < safeSteps.length; i++) {
+      const step = safeSteps[i];
+      const raw = step && step.kind === "text" ? step.text : (step && step.command ? step.command : "");
+      const keywords = extractKeywords(raw);
+      let foundToken = -1;
+      for (const keyword of keywords) {
+        const idx = findTokenIndex(keyword, searchStart);
+        if (idx >= 0) {
+          foundToken = idx;
+          break;
+        }
+      }
+
+      let charPos = -1;
+      if (foundToken >= 0) {
+        charPos = tokens[foundToken].index;
+        searchStart = foundToken + 1;
+      } else {
+        charPos = fallbackChar;
+      }
+
+      if (positions.length > 0) {
+        const minNext = positions[positions.length - 1] + Math.max(1, Math.floor(totalChars * 0.012));
+        if (charPos <= minNext) charPos = minNext;
+      }
+
+      fallbackChar = charPos + fallbackGap;
+      positions.push(Math.min(totalChars - 1, charPos));
+    }
+
+    let inferred = positions.map((p) => timelineProgressAtChar(speechTimeline, p));
+    inferred = sanitizeTimings(inferred, safeSteps.length);
+
+    const base = sanitizeTimings(fallbackTimings, safeSteps.length);
+    if (base.length !== inferred.length) return inferred;
+
+    const baseIsGeneric = looksEvenlySpaced(base);
+    // Keep intentionally authored timings (for example, timestamp-based plans)
+    // instead of blending them away with heuristic inference.
+    if (!baseIsGeneric) return base;
+
+    const weight = 0.12;
+    const blended = inferred.map((v, i) => clamp01(v * (1 - weight) + base[i] * weight));
+    return sanitizeTimings(blended, safeSteps.length);
+  }
+
+  function buildSpeechSyncedTimings(narration, steps, fallbackTimings, timeline) {
+    const safeSteps = Array.isArray(steps) ? steps : [];
+    if (safeSteps.length === 0) return [];
+    return inferTimingsFromNarration(narration, safeSteps, fallbackTimings, timeline || createSpeechTimeline(narration));
+  }
+
   rebuildBoardSteps();
+  lessonSpeechTimeline = createSpeechTimeline(scriptText);
+  boardTimings = sanitizeTimings(boardTimings, boardSteps.length);
+  boardTimings = buildSpeechSyncedTimings(scriptText, boardSteps, boardTimings, lessonSpeechTimeline);
+  const initialLessonTimestampSeconds = resolveTimestampSeconds(boardTimestampSeconds, boardSteps.length, estimateDurationSeconds());
+  const hasLessonTimestampSeconds = initialLessonTimestampSeconds.length === boardSteps.length && boardSteps.length > 0;
+  lessonStepSyncPlan = hasLessonTimestampSeconds
+    ? []
+    : buildStepSyncPlan(scriptText, boardSteps, boardTimings, lessonSpeechTimeline);
+  stepSyncPlan = lessonStepSyncPlan.slice();
+  lessonBoardLines = Array.isArray(boardLines) ? boardLines.slice() : [];
+  lessonBoardTimings = Array.isArray(boardTimings) ? boardTimings.slice() : [];
+  lessonBoardTimestampSeconds = Array.isArray(boardTimestampSeconds) ? boardTimestampSeconds.slice() : [];
+  renderBoardTimingPlan();
 
   function estimateDurationSeconds() {
     // Rough estimate for spoken narration when audio duration isn't available.
     const chars = scriptText.length;
     const seconds = chars > 0 ? chars / 13 : 90;
     return Math.max(45, Math.min(300, seconds));
+  }
+
+  function formatClockTimestamp(totalSeconds) {
+    const safe = Math.max(0, Math.floor(Number.isFinite(totalSeconds) ? totalSeconds : 0));
+    const hours = Math.floor(safe / 3600);
+    const minutes = Math.floor((safe % 3600) / 60);
+    const seconds = safe % 60;
+    if (hours > 0)
+      return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+    return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+  }
+
+  function renderBoardTimingPlan() {
+    if (!timingPlanEl) return;
+
+    timingPlanEl.replaceChildren();
+    const steps = Array.isArray(boardSteps) ? boardSteps : [];
+    if (steps.length === 0) return;
+
+    const timings = sanitizeTimings(boardTimings, steps.length);
+    const activeAudio = mode === "qa" ? qaAudio : audio;
+    const fallbackDuration = mode === "qa"
+      ? (qaDurationSeconds > 0 ? qaDurationSeconds : 30)
+      : estimateDurationSeconds();
+    const sourceDuration = (activeAudio && Number.isFinite(activeAudio.duration) && activeAudio.duration > 0)
+      ? activeAudio.duration
+      : fallbackDuration;
+    const timestampSeconds = resolveTimestampSeconds(boardTimestampSeconds, steps.length, sourceDuration);
+    const hasAbsoluteTimestamps = timestampSeconds.length === steps.length;
+    const speedRate = Math.max(0.1, getSpeed());
+
+    for (let i = 0; i < steps.length; i++) {
+      const step = steps[i];
+      if (!step) continue;
+
+      const when = hasAbsoluteTimestamps
+        ? (timestampSeconds[i] / speedRate)
+        : (timings[i] * sourceDuration / speedRate);
+      const lineText = step.kind === "draw"
+        ? `DRAW: ${String(step.command || "").trim()}`
+        : String(step.text || "").trim();
+
+      const li = document.createElement("li");
+      const stamp = document.createElement("span");
+      stamp.className = "board-timing-stamp";
+      stamp.textContent = formatClockTimestamp(when);
+      li.appendChild(stamp);
+
+      const lineCode = document.createElement("code");
+      lineCode.textContent = lineText;
+      li.appendChild(lineCode);
+
+      timingPlanEl.appendChild(li);
+    }
   }
 
   function roundedRectPath(c, x, y, w, h, r) {
@@ -328,15 +1187,128 @@ function wireAvatarVideoPlayer() {
   }
 
   function drawImageCover(c, image, x, y, w, h) {
-    const iw = image.naturalWidth || image.width;
-    const ih = image.naturalHeight || image.height;
+    const iw = image.naturalWidth || image.videoWidth || image.width;
+    const ih = image.naturalHeight || image.videoHeight || image.height;
     if (!iw || !ih) return;
-    const scale = Math.max(w / iw, h / ih);
-    const sw = w / scale;
-    const sh = h / scale;
-    const sx = (iw - sw) / 2;
-    const sy = (ih - sh) / 2;
-    c.drawImage(image, sx, sy, sw, sh, x, y, w, h);
+    const crop = getCoverSourceRect(iw, ih, w, h);
+    if (!crop) return;
+    c.drawImage(image, crop.x, crop.y, crop.w, crop.h, x, y, w, h);
+  }
+
+  function getCoverSourceRect(sourceW, sourceH, targetW, targetH) {
+    if (!sourceW || !sourceH || !targetW || !targetH) return null;
+    const scale = Math.max(targetW / sourceW, targetH / sourceH);
+    const cropW = targetW / scale;
+    const cropH = targetH / scale;
+    return {
+      x: (sourceW - cropW) / 2,
+      y: (sourceH - cropH) / 2,
+      w: cropW,
+      h: cropH
+    };
+  }
+
+  function drawImageCoverRegion(c, image, sx, sy, sw, sh, x, y, w, h) {
+    if (!sw || !sh) return;
+    const crop = getCoverSourceRect(sw, sh, w, h);
+    if (!crop) return;
+    c.drawImage(image, sx + crop.x, sy + crop.y, crop.w, crop.h, x, y, w, h);
+  }
+
+  function estimateSpeechLevelFromText(text, charIndex) {
+    const src = String(text || "");
+    if (!src) return 0;
+
+    const idx = Math.max(0, Math.min(src.length - 1, Math.floor(Number.isFinite(charIndex) ? charIndex : 0)));
+    const start = Math.max(0, idx - 2);
+    const end = Math.min(src.length, idx + 8);
+    const windowText = src.slice(start, end).toLowerCase();
+    if (!windowText) return 0;
+
+    let level = 0.14;
+    for (const ch of windowText) {
+      if ("aeiouy".includes(ch)) level += 0.12;
+      else if ("fvszjxcrltnh".includes(ch)) level += 0.06;
+      else if ("bmp".includes(ch)) level -= 0.03;
+      else if (" \t\r\n".includes(ch)) level -= 0.08;
+      else if (".,;:!?".includes(ch)) level -= 0.12;
+    }
+
+    const current = src[idx];
+    if (current && ".,;:!?".includes(current)) level *= 0.45;
+    return clamp01(level);
+  }
+
+  function estimateLessonSpeechLevel(nowMs) {
+    const timeline = lessonSpeechTimeline || createSpeechTimeline(scriptText);
+    if (audio && !useBoundaryLessonNarration() && !audio.paused && !audio.ended) {
+      const dur = (Number.isFinite(audio.duration) && audio.duration > 0)
+        ? audio.duration
+        : estimateDurationSeconds();
+      const cur = Number.isFinite(audio.currentTime) ? audio.currentTime : 0;
+      const progress = dur > 0 ? clamp01(cur / dur) : 0;
+      const charIdx = timelineCharAtProgress(timeline, progress);
+      return estimateSpeechLevelFromText(scriptText, charIdx);
+    }
+
+    if (!manualIsPlaying || manualIsPaused) return 0;
+    const est = estimateDurationSeconds();
+    const seconds = manualElapsedSeconds + (manualPlayStart > 0 ? (nowMs - manualPlayStart) / 1000 : 0);
+    const fallback = est > 0 ? clamp01(seconds / est) : 0;
+    const fallbackChar = timelineCharAtProgress(timeline, fallback);
+    const charIdx = manualHasSpeechBoundary ? Math.max(manualSpeechCharIndex, fallbackChar) : fallbackChar;
+    return estimateSpeechLevelFromText(scriptText, charIdx);
+  }
+
+  function estimateQaSpeechLevel(nowMs) {
+    if (!qaIsSpeaking) return 0;
+    const text = String(qaNarrationText || "").trim();
+    if (!text) return 0;
+
+    const timeline = qaSpeechTimeline || createSpeechTimeline(text);
+    let charIdx = qaSpeechCharIndex;
+
+    if (qaAudio && Number.isFinite(qaAudio.duration) && qaAudio.duration > 0) {
+      const cur = Number.isFinite(qaAudio.currentTime) ? qaAudio.currentTime : 0;
+      const audioProgress = clamp01(cur / qaAudio.duration);
+      const audioChar = timelineCharAtProgress(timeline, audioProgress);
+      charIdx = qaHasSpeechBoundary ? Math.max(charIdx, audioChar) : audioChar;
+    } else {
+      const seconds = qaElapsedSeconds + (qaPlayStart > 0 ? (nowMs - qaPlayStart) / 1000 : 0);
+      const dur = qaDurationSeconds > 0 ? qaDurationSeconds : estimateSpeechSeconds(text, getSpeed());
+      const fallbackProgress = dur > 0 ? clamp01(seconds / dur) : 0;
+      const fallbackChar = timelineCharAtProgress(timeline, fallbackProgress);
+      charIdx = qaHasSpeechBoundary ? Math.max(charIdx, fallbackChar) : fallbackChar;
+    }
+
+    return estimateSpeechLevelFromText(text, charIdx);
+  }
+
+  function getNarrationClockSeconds(nowMs) {
+    const speedRate = Math.max(0.1, getSpeed());
+    if (mode === "qa") {
+      if (qaAudio && Number.isFinite(qaAudio.currentTime))
+        return Math.max(0, qaAudio.currentTime);
+      const qaSeconds = qaElapsedSeconds + (qaPlayStart > 0 ? (nowMs - qaPlayStart) / 1000 : 0);
+      return Math.max(0, qaSeconds * speedRate);
+    }
+
+    if (audio && !useBoundaryLessonNarration() && Number.isFinite(audio.currentTime))
+      return Math.max(0, audio.currentTime);
+
+    const lessonSeconds = manualElapsedSeconds + (manualPlayStart > 0 ? (nowMs - manualPlayStart) / 1000 : 0);
+    return Math.max(0, lessonSeconds * speedRate);
+  }
+
+  function isNarrationCurrentlySpeaking() {
+    if (mode === "qa") {
+      if (qaAudio) return !qaAudio.paused && !qaAudio.ended;
+      return qaIsSpeaking;
+    }
+
+    if (audio && !useBoundaryLessonNarration())
+      return !audio.paused && !audio.ended;
+    return manualIsPlaying && !manualIsPaused;
   }
 
   function getSpeed() {
@@ -348,6 +1320,7 @@ function wireAvatarVideoPlayer() {
     if (speedValue) speedValue.textContent = `${getSpeed().toFixed(1)}×`;
     if (audio) audio.playbackRate = getSpeed();
     if (qaAudio) qaAudio.playbackRate = getSpeed();
+    renderBoardTimingPlan();
   }
 
   function startLoop() {
@@ -369,16 +1342,20 @@ function wireAvatarVideoPlayer() {
         level = Math.min(1, Math.sqrt(sum / analyserData.length) * 2.2);
       }
 
-      // No analyser in QA mode (or audio paused): simulate speech so the avatar "talks".
-      if (qaIsSpeaking) {
-        level = Math.max(level, 0.18 + Math.abs(Math.sin(elapsed * 10.0)) * 0.35);
-      }
+      // When live audio amplitude isn't available, estimate speaking shape from narration position.
+      level = Math.max(level, estimateQaSpeechLevel(t));
+      level = Math.max(level, estimateLessonSpeechLevel(t));
 
       // Smooth transitions so the mouth doesn't jitter.
       lastLevel = lastLevel * 0.85 + level * 0.15;
 
-      const w = canvas.width;
-      const h = canvas.height;
+      ensureCanvasResolution(false);
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.setTransform(renderScale, 0, 0, renderScale, 0, 0);
+
+      const w = renderWidth;
+      const h = renderHeight;
 
       // Background
       const grad = ctx.createLinearGradient(0, 0, w, h);
@@ -388,63 +1365,12 @@ function wireAvatarVideoPlayer() {
       ctx.fillRect(0, 0, w, h);
 
       const padding = 18;
-      const teacher = {
+      const board = {
         x: padding,
         y: padding,
-        w: Math.floor(w * 0.33),
+        w: w - padding * 2,
         h: h - padding * 2
       };
-      const board = {
-        x: teacher.x + teacher.w + padding,
-        y: padding,
-        w: w - (teacher.x + teacher.w + padding) - padding,
-        h: h - padding * 2
-      };
-
-      // Teacher panel
-      ctx.save();
-      ctx.shadowColor = "rgba(0,0,0,0.35)";
-      ctx.shadowBlur = 20;
-      roundedRectPath(ctx, teacher.x, teacher.y, teacher.w, teacher.h, 18);
-      ctx.fillStyle = "rgba(0,0,0,0.28)";
-      ctx.fill();
-      ctx.shadowBlur = 0;
-      ctx.strokeStyle = "rgba(255,255,255,0.18)";
-      ctx.lineWidth = 2;
-      ctx.stroke();
-      ctx.restore();
-
-      // Draw avatar inside teacher panel with subtle "breathing" motion.
-      const breath = Math.sin(elapsed * 1.2) * 1.2;
-      const speak = lastLevel * 2.2;
-      const innerPad = 10;
-      const tx = teacher.x + innerPad;
-      const ty = teacher.y + innerPad;
-      const tw = teacher.w - innerPad * 2;
-      const th = teacher.h - innerPad * 2;
-
-      if (img.complete && img.naturalWidth > 0) {
-        ctx.save();
-        const scale = 1 + (speak * 0.004);
-        const tilt = Math.sin(elapsed * 0.9) * 0.012 + speak * 0.006;
-        const swayX = Math.sin(elapsed * 0.8) * 1.8 + speak * 1.2;
-        ctx.translate(tx + tw / 2 + swayX, ty + th / 2 + breath);
-        ctx.rotate(tilt);
-        ctx.scale(scale, scale);
-        roundedRectPath(ctx, -tw / 2, -th / 2, tw, th, 14);
-        ctx.clip();
-        drawImageCover(ctx, img, -tw / 2, -th / 2, tw, th);
-        ctx.restore();
-      } else {
-        ctx.fillStyle = "rgba(0,0,0,0.20)";
-        roundedRectPath(ctx, tx, ty, tw, th, 14);
-        ctx.fill();
-        ctx.fillStyle = "rgba(255,255,255,0.75)";
-        ctx.font = "18px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial";
-        ctx.textAlign = "center";
-        ctx.textBaseline = "middle";
-        ctx.fillText("Loading teacher…", tx + tw / 2, ty + th / 2);
-      }
 
       // Whiteboard
       ctx.save();
@@ -476,37 +1402,82 @@ function wireAvatarVideoPlayer() {
         ctx.stroke();
       }
 
-      // Writing progress
+      // Writing progress (driven by spoken position, not just wall-clock).
       const est = estimateDurationSeconds();
+      const activeTimeline = mode === "qa" ? qaSpeechTimeline : lessonSpeechTimeline;
+      const useLessonBoundarySync = mode !== "qa" && useBoundaryLessonNarration();
       let progress = 0;
+      let spokenCharIndex = 0;
+      let narrationSeconds = 0;
+      const speedRate = Math.max(0.1, getSpeed());
       if (mode === "qa") {
         if (qaAudio && Number.isFinite(qaAudio.duration) && qaAudio.duration > 0) {
           const cur = Number.isFinite(qaAudio.currentTime) ? qaAudio.currentTime : 0;
           const dur = qaAudio.duration;
           progress = dur > 0 ? Math.min(1, Math.max(0, cur / dur)) : 0;
+          spokenCharIndex = timelineCharAtProgress(activeTimeline, progress);
+          narrationSeconds = Math.max(0, cur);
         } else {
           const seconds = qaElapsedSeconds + (qaPlayStart > 0 ? (t - qaPlayStart) / 1000 : 0);
           const dur = qaDurationSeconds > 0 ? qaDurationSeconds : 30;
-          progress = dur > 0 ? Math.min(1, Math.max(0, seconds / dur)) : 0;
+          const fallback = dur > 0 ? Math.min(1, Math.max(0, seconds / dur)) : 0;
+          const fallbackChar = timelineCharAtProgress(activeTimeline, fallback);
+          spokenCharIndex = qaHasSpeechBoundary ? Math.max(qaSpeechCharIndex, fallbackChar) : fallbackChar;
+          progress = timelineProgressAtChar(activeTimeline, spokenCharIndex);
+          narrationSeconds = Math.max(0, seconds * speedRate);
         }
-      } else if (audio) {
+      } else if (audio && !useLessonBoundarySync) {
         const cur = Number.isFinite(audio.currentTime) ? audio.currentTime : 0;
         const dur = (Number.isFinite(audio.duration) && audio.duration > 0) ? audio.duration : est;
         progress = dur > 0 ? Math.min(1, Math.max(0, cur / dur)) : 0;
+        spokenCharIndex = timelineCharAtProgress(activeTimeline, progress);
+        narrationSeconds = Math.max(0, cur);
       } else {
         const seconds = manualElapsedSeconds + (manualPlayStart > 0 ? (t - manualPlayStart) / 1000 : 0);
-        progress = est > 0 ? Math.min(1, Math.max(0, seconds / est)) : 0;
+        const fallback = est > 0 ? Math.min(1, Math.max(0, seconds / est)) : 0;
+        const fallbackChar = timelineCharAtProgress(activeTimeline, fallback);
+        spokenCharIndex = manualHasSpeechBoundary ? Math.max(manualSpeechCharIndex, fallbackChar) : fallbackChar;
+        progress = timelineProgressAtChar(activeTimeline, spokenCharIndex);
+        narrationSeconds = Math.max(0, seconds * speedRate);
       }
 
-      const lines = Array.isArray(boardLines) ? boardLines : [];
       const steps = Array.isArray(boardSteps) ? boardSteps : [];
       const timings = (Array.isArray(boardTimings) && boardTimings.length === steps.length)
         ? boardTimings
         : evenTimings(steps.length);
+      const playbackDuration = mode === "qa"
+        ? ((qaAudio && Number.isFinite(qaAudio.duration) && qaAudio.duration > 0)
+          ? qaAudio.duration
+          : (qaDurationSeconds > 0 ? qaDurationSeconds : 30))
+        : ((audio && Number.isFinite(audio.duration) && audio.duration > 0)
+          ? audio.duration
+          : estimateDurationSeconds());
+      const timestampSecondsRaw = resolveTimestampSeconds(boardTimestampSeconds, steps.length, playbackDuration);
+      const timestampSeconds = timestampSecondsRaw.length === steps.length ? timestampSecondsRaw : null;
+      const syncPlan = (Array.isArray(stepSyncPlan) && stepSyncPlan.length === steps.length) ? stepSyncPlan : null;
+      const shouldRenderStep = (idx, step) => {
+        if (!step) return false;
+        if (step.kind === "draw") return true;
+        if (!syncPlan || !syncPlan[idx]) return true;
+        return !!syncPlan[idx].shouldWrite;
+      };
       const total = steps.length;
       let activeLine = -1;
       for (let i = 0; i < total; i++) {
-        if (progress >= timings[i]) activeLine = i;
+        const step = steps[i];
+        if (!shouldRenderStep(i, step)) continue;
+        if (timestampSeconds && Number.isFinite(timestampSeconds[i])) {
+          if (narrationSeconds >= timestampSeconds[i]) activeLine = i;
+          continue;
+        }
+        if (syncPlan && syncPlan[i]) {
+          const startChar = Number.isFinite(syncPlan[i].startChar)
+            ? syncPlan[i].startChar
+            : timelineCharAtProgress(activeTimeline, timings[i]);
+          if (spokenCharIndex >= startChar) activeLine = i;
+        } else if (progress >= timings[i]) {
+          activeLine = i;
+        }
       }
 
       const textPad = 22;
@@ -527,18 +1498,19 @@ function wireAvatarVideoPlayer() {
 
       const x0 = textArea.x;
       let y0 = textArea.y;
-      const maxWidth = textArea.w;
+      let maxWidth = textArea.w;
       const lineHeight = 30;
+      boardTextViewport = {
+        x: textArea.x,
+        y: textArea.y,
+        w: textArea.w,
+        h: textArea.h,
+        lineHeight
+      };
       ctx.fillStyle = "#111827";
       ctx.textAlign = "left";
       ctx.textBaseline = "top";
       ctx.font = "22px 'Bradley Hand', 'Segoe Print', 'Comic Sans MS', ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial";
-
-      function drawLine(text, isPartial) {
-        if (y0 > textArea.y + textArea.h - lineHeight) return;
-        ctx.fillText(text, x0, y0, maxWidth);
-        if (!isPartial) y0 += lineHeight;
-      }
 
       let penX = null;
       let penY = null;
@@ -804,216 +1776,498 @@ function wireAvatarVideoPlayer() {
           c.restore();
         }
 
-        resetLayer();
+        class WhiteboardShape {
+          constructor(id, kind) {
+            this.id = id;
+            this.kind = kind;
+            this.progress = 1;
+          }
+          setProgress(t) {
+            this.progress = Math.max(0, Math.min(1, Number.isFinite(t) ? t : 1));
+            return this;
+          }
+          setPosition(x, y) {
+            if (Number.isFinite(x)) this.x = x;
+            if (Number.isFinite(y)) this.y = y;
+            return this;
+          }
+          moveBy(dx, dy) {
+            if (Number.isFinite(dx) && Number.isFinite(this.x)) this.x += dx;
+            if (Number.isFinite(dy) && Number.isFinite(this.y)) this.y += dy;
+            return this;
+          }
+          draw() { /* override */ }
+          getAnchor() { return null; }
+        }
 
-        let mode = "none"; // "none" | "cartesian" | "bar" | "triangle"
-        let axes = { xmin: -5, xmax: 5, ymin: -5, ymax: 5 };
-        let mapper = null;
+        class AxesShape extends WhiteboardShape {
+          constructor(id, range) {
+            super(id, "axes");
+            this.setRange(range);
+            this.mapper = null;
+          }
+          setRange(range) {
+            const next = range || {};
+            this.xmin = Number.isFinite(next.xmin) ? next.xmin : -5;
+            this.xmax = Number.isFinite(next.xmax) ? next.xmax : 5;
+            this.ymin = Number.isFinite(next.ymin) ? next.ymin : -5;
+            this.ymax = Number.isFinite(next.ymax) ? next.ymax : 5;
+            if (this.xmax === this.xmin) this.xmax = this.xmin + 1;
+            if (this.ymax === this.ymin) this.ymax = this.ymin + 1;
+            return this;
+          }
+          draw(c2) {
+            this.mapper = renderCartesianAxes(c2, area, {
+              xmin: this.xmin, xmax: this.xmax, ymin: this.ymin, ymax: this.ymax
+            });
+          }
+          getAnchor() {
+            if (!this.mapper) return null;
+            return { x: this.mapper.mapX(0), y: this.mapper.mapY(0) };
+          }
+        }
+
+        class LineShape extends WhiteboardShape {
+          constructor(id, expr, axesId) {
+            super(id, "line");
+            this.expr = expr;
+            this.axesId = axesId;
+            this.anchor = null;
+          }
+          setEquation(expr) {
+            this.expr = expr;
+            return this;
+          }
+          setAxes(axesId) {
+            this.axesId = axesId;
+            return this;
+          }
+          draw(c2, getMapper, axesRange) {
+            const m = getMapper(this.axesId);
+            if (!m || !this.expr) return;
+            const t = this.progress;
+            c2.save();
+            c2.lineCap = "round";
+            c2.lineJoin = "round";
+            c2.strokeStyle = "rgba(124,58,237,0.95)";
+            c2.lineWidth = 4;
+            if (this.expr.kind === "vertical") {
+              const x = m.mapX(this.expr.x);
+              const y1 = area.y + 14;
+              const y2 = area.y + area.h - 14;
+              const yy = y1 + (y2 - y1) * t;
+              c2.beginPath();
+              c2.moveTo(x, y1);
+              c2.lineTo(x, yy);
+              c2.stroke();
+              this.anchor = { x, y: yy };
+            } else {
+              const x1m = axesRange.xmin;
+              const x2m = axesRange.xmax;
+              const y1m = this.expr.m * x1m + this.expr.b;
+              const y2m = this.expr.m * x2m + this.expr.b;
+              const x1 = m.mapX(x1m);
+              const y1 = m.mapY(y1m);
+              const x2 = m.mapX(x2m);
+              const y2 = m.mapY(y2m);
+              const x = x1 + (x2 - x1) * t;
+              const y = y1 + (y2 - y1) * t;
+              c2.beginPath();
+              c2.moveTo(x1, y1);
+              c2.lineTo(x, y);
+              c2.stroke();
+              this.anchor = { x, y };
+            }
+            c2.restore();
+          }
+          getAnchor() { return this.anchor; }
+        }
+
+        class PointShape extends WhiteboardShape {
+          constructor(id, pt, label, axesId) {
+            super(id, "point");
+            this.x = pt.x;
+            this.y = pt.y;
+            this.label = label || null;
+            this.axesId = axesId;
+            this.anchor = null;
+          }
+          setPoint(pt) {
+            this.x = pt.x;
+            this.y = pt.y;
+            return this;
+          }
+          setLabel(label) {
+            this.label = label || null;
+            return this;
+          }
+          setAxes(axesId) {
+            this.axesId = axesId;
+            return this;
+          }
+          draw(c2, getMapper) {
+            const m = getMapper(this.axesId);
+            if (!m) return;
+            const x = m.mapX(this.x);
+            const y = m.mapY(this.y);
+            c2.save();
+            c2.globalAlpha = 0.2 + 0.8 * this.progress;
+            c2.fillStyle = "rgba(17,24,39,0.92)";
+            c2.beginPath();
+            c2.arc(x, y, 6, 0, Math.PI * 2);
+            c2.fill();
+            c2.restore();
+            if (this.label) {
+              c2.save();
+              c2.globalAlpha = 0.2 + 0.8 * this.progress;
+              c2.fillStyle = "rgba(17,24,39,0.80)";
+              c2.font = "16px 'Bradley Hand', 'Segoe Print', 'Comic Sans MS', ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial";
+              c2.textAlign = "left";
+              c2.textBaseline = "bottom";
+              c2.fillText(this.label, x + 8, y - 6, area.w - 12);
+              c2.restore();
+            }
+            this.anchor = { x, y };
+          }
+          getAnchor() { return this.anchor; }
+        }
+
+        class CircleShape extends WhiteboardShape {
+          constructor(id, axesId) {
+            super(id, "circle");
+            this.axesId = axesId;
+            this.x = 0;
+            this.y = 0;
+            this.radius = 2;
+            this.startDeg = 0;
+            this.endDeg = 360;
+            this.anchor = null;
+          }
+          setCenter(x, y) { this.setPosition(x, y); return this; }
+          setRadius(radius) {
+            if (Number.isFinite(radius) && radius > 0) this.radius = radius;
+            return this;
+          }
+          setAngles(startDeg, endDeg) {
+            if (Number.isFinite(startDeg)) this.startDeg = startDeg;
+            if (Number.isFinite(endDeg)) this.endDeg = endDeg;
+            return this;
+          }
+          setAxes(axesId) {
+            this.axesId = axesId;
+            return this;
+          }
+          draw(c2, getMapper) {
+            const m = getMapper(this.axesId);
+            if (!m) return;
+            const cx = m.mapX(this.x);
+            const cy = m.mapY(this.y);
+            const r = Math.max(4, Math.abs(m.mapX(this.x + this.radius) - cx));
+            const start = (this.startDeg * Math.PI) / 180;
+            const end = (this.endDeg * Math.PI) / 180;
+            const now = start + (end - start) * this.progress;
+            c2.save();
+            c2.strokeStyle = "rgba(124,58,237,0.95)";
+            c2.lineWidth = 4;
+            c2.beginPath();
+            c2.arc(cx, cy, r, start, now, false);
+            c2.stroke();
+            c2.restore();
+            this.anchor = { x: cx + Math.cos(now) * r, y: cy + Math.sin(now) * r };
+          }
+          getAnchor() { return this.anchor; }
+        }
+
+        class SquareShape extends WhiteboardShape {
+          constructor(id, axesId) {
+            super(id, "square");
+            this.axesId = axesId;
+            this.x = 0;
+            this.y = 0;
+            this.size = 2;
+            this.rotationDeg = 0;
+            this.anchor = null;
+          }
+          setCenter(x, y) { this.setPosition(x, y); return this; }
+          setSize(size) {
+            if (Number.isFinite(size) && size > 0) this.size = size;
+            return this;
+          }
+          setRotation(deg) {
+            if (Number.isFinite(deg)) this.rotationDeg = deg;
+            return this;
+          }
+          setAxes(axesId) {
+            this.axesId = axesId;
+            return this;
+          }
+          draw(c2, getMapper) {
+            const m = getMapper(this.axesId);
+            if (!m) return;
+            const cx = m.mapX(this.x);
+            const cy = m.mapY(this.y);
+            const half = Math.max(8, Math.abs(m.mapX(this.x + this.size / 2) - cx));
+            const rot = (this.rotationDeg * Math.PI) / 180;
+            const base = [
+              { x: -half, y: -half },
+              { x: half, y: -half },
+              { x: half, y: half },
+              { x: -half, y: half }
+            ];
+            const pts = base.map((p) => ({
+              x: cx + (p.x * Math.cos(rot) - p.y * Math.sin(rot)),
+              y: cy + (p.x * Math.sin(rot) + p.y * Math.cos(rot))
+            }));
+            const edges = [[0, 1], [1, 2], [2, 3], [3, 0]];
+            const segProgress = Math.max(0, Math.min(1, this.progress)) * edges.length;
+
+            c2.save();
+            c2.strokeStyle = "rgba(124,58,237,0.95)";
+            c2.lineWidth = 4;
+            c2.lineCap = "round";
+            for (let i = 0; i < edges.length; i++) {
+              const remain = segProgress - i;
+              if (remain <= 0) break;
+              const [a, b] = edges[i];
+              const p1 = pts[a];
+              const p2 = pts[b];
+              const t = Math.min(1, remain);
+              const x = p1.x + (p2.x - p1.x) * t;
+              const y = p1.y + (p2.y - p1.y) * t;
+              c2.beginPath();
+              c2.moveTo(p1.x, p1.y);
+              c2.lineTo(x, y);
+              c2.stroke();
+              this.anchor = { x, y };
+            }
+            c2.restore();
+            if (!this.anchor) this.anchor = { x: cx, y: cy };
+          }
+          getAnchor() { return this.anchor; }
+        }
+
+        class TriangleShape extends WhiteboardShape {
+          constructor(id) {
+            super(id, "triangle");
+            this.a = 4;
+            this.b = 3;
+            this.labels = { base: "a", height: "b", hyp: "c" };
+            this.angles = null;
+            this.layout = null;
+            this.anchor = null;
+          }
+          setSides(a, b, labels) {
+            if (Number.isFinite(a) && a > 0) this.a = a;
+            if (Number.isFinite(b) && b > 0) this.b = b;
+            if (labels) this.labels = {
+              base: labels.base || this.labels.base,
+              height: labels.height || this.labels.height,
+              hyp: labels.hyp || this.labels.hyp
+            };
+            return this;
+          }
+          setAngles(aDeg, bDeg, cDeg) {
+            const a = Number.isFinite(aDeg) ? Math.max(1, Math.min(178, aDeg)) : null;
+            const b = Number.isFinite(bDeg) ? Math.max(1, Math.min(178, bDeg)) : null;
+            let c = Number.isFinite(cDeg) ? Math.max(1, Math.min(178, cDeg)) : null;
+            if (a !== null && b !== null && c === null) c = 180 - a - b;
+            if (a === null || b === null || c === null) return this;
+            if (a + b + c < 179 || a + b + c > 181) return this;
+            this.angles = { a, b, c };
+            return this;
+          }
+          draw(c2) {
+            const pad = 22;
+            const maxW = area.w - pad * 2;
+            const maxH = area.h - pad * 2;
+
+            let base = this.a;
+            let height = this.b;
+            if (this.angles) {
+              const aRad = (this.angles.a * Math.PI) / 180;
+              const bRad = (this.angles.b * Math.PI) / 180;
+              const cRad = (this.angles.c * Math.PI) / 180;
+              const sinC = Math.sin(cRad);
+              if (Math.abs(sinC) > 1e-6) {
+                const sideA = base * Math.sin(aRad) / sinC;
+                const sideB = base * Math.sin(bRad) / sinC;
+                const x = (sideB * sideB + base * base - sideA * sideA) / (2 * base);
+                const y = Math.sqrt(Math.max(0, sideB * sideB - x * x));
+                height = Math.max(0.5, y);
+              }
+            }
+
+            const scale = Math.max(1e-6, Math.min(maxW / base, maxH / height) * 0.82);
+            const x0 = area.x + pad;
+            const y0 = area.y + area.h - pad;
+            const p0 = { x: x0, y: y0 };
+            const p1 = { x: x0 + base * scale, y: y0 };
+            const p2 = { x: x0 + base * scale, y: y0 - height * scale };
+            this.layout = { p0, p1, p2 };
+
+            const seg = (from, to, tt) => {
+              const x = from.x + (to.x - from.x) * tt;
+              const y = from.y + (to.y - from.y) * tt;
+              c2.beginPath();
+              c2.moveTo(from.x, from.y);
+              c2.lineTo(x, y);
+              c2.stroke();
+              this.anchor = { x, y };
+            };
+
+            c2.save();
+            c2.strokeStyle = "rgba(124,58,237,0.95)";
+            c2.lineWidth = 4;
+            c2.lineCap = "round";
+            c2.lineJoin = "round";
+
+            if (this.progress < 1 / 3) {
+              seg(p0, p1, this.progress * 3);
+            } else if (this.progress < 2 / 3) {
+              seg(p0, p1, 1);
+              seg(p1, p2, (this.progress - 1 / 3) * 3);
+            } else {
+              seg(p0, p1, 1);
+              seg(p1, p2, 1);
+              seg(p2, p0, (this.progress - 2 / 3) * 3);
+            }
+            c2.restore();
+
+            if (this.progress > 0.9) {
+              c2.save();
+              c2.fillStyle = "rgba(17,24,39,0.78)";
+              c2.font = "16px 'Bradley Hand', 'Segoe Print', 'Comic Sans MS', ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial";
+              c2.textAlign = "center";
+              c2.textBaseline = "middle";
+              c2.fillText(String(this.labels.base || "a"), (p0.x + p1.x) / 2, p0.y + 14, maxW);
+              c2.fillText(String(this.labels.height || "b"), p1.x + 14, (p1.y + p2.y) / 2, maxW);
+              if (this.labels.hyp) c2.fillText(String(this.labels.hyp), (p0.x + p2.x) / 2 - 6, (p0.y + p2.y) / 2 - 10, maxW);
+              c2.restore();
+            }
+          }
+          focus(c2, strength, which) {
+            if (!this.layout) return false;
+            const q = String(which || "").toLowerCase().trim();
+            const p0 = this.layout.p0;
+            const p1 = this.layout.p1;
+            const p2 = this.layout.p2;
+
+            if (q.includes("angle") || q.includes("corner") || q.includes("box") || q.includes("square")) {
+              c2.save();
+              c2.globalAlpha = 0.25 + 0.75 * strength;
+              c2.strokeStyle = "rgba(34,197,94,0.95)";
+              c2.lineWidth = 4;
+              c2.beginPath();
+              c2.moveTo(p1.x, p1.y);
+              c2.lineTo(p1.x - 16, p1.y);
+              c2.lineTo(p1.x - 16, p1.y - 16);
+              c2.lineTo(p1.x, p1.y - 16);
+              c2.stroke();
+              c2.restore();
+              return { x: p1.x, y: p1.y };
+            }
+
+            let a = p2;
+            let b = p0;
+            if (q.includes("base") || q === "a" || q.includes("leg a") || q.includes("leg1")) { a = p0; b = p1; }
+            else if (q.includes("height") || q === "b" || q.includes("leg b") || q.includes("leg2")) { a = p1; b = p2; }
+            else if (q.includes("hyp") || q === "c" || q.includes("hypotenuse")) { a = p2; b = p0; }
+
+            c2.save();
+            c2.globalAlpha = 0.25 + 0.75 * strength;
+            c2.strokeStyle = "rgba(34,197,94,0.95)";
+            c2.lineWidth = 7;
+            c2.lineCap = "round";
+            c2.beginPath();
+            c2.moveTo(a.x, a.y);
+            c2.lineTo(b.x, b.y);
+            c2.stroke();
+            c2.restore();
+            return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+          }
+          getAnchor() { return this.anchor; }
+        }
+
+        class BarShape extends WhiteboardShape {
+          constructor(id) {
+            super(id, "bar");
+            this.bars = [];
+            this.layout = [];
+            this.anchor = null;
+          }
+          setBars(bars) {
+            this.bars = Array.isArray(bars) ? bars.slice() : [];
+            return this;
+          }
+          draw(c2) {
+            const bars = this.bars;
+            if (!Array.isArray(bars) || bars.length === 0) return;
+
+            const pad = 18;
+            const innerW = Math.max(10, area.w - pad * 2);
+            const innerH = Math.max(10, area.h - pad * 2);
+            const x0 = area.x + pad;
+            const y0 = area.y + area.h - pad;
+            const maxV = Math.max(1e-6, ...bars.map((b) => Math.abs(b.value)));
+            const n = bars.length;
+            const gapPx = Math.max(8, Math.floor(innerW * 0.04));
+            const barW = n > 0 ? Math.max(10, Math.floor((innerW - gapPx * (n - 1)) / n)) : innerW;
+            this.layout = [];
+
+            c2.save();
+            c2.strokeStyle = "rgba(17,24,39,0.55)";
+            c2.lineWidth = 2.5;
+            c2.beginPath();
+            c2.moveTo(x0, y0);
+            c2.lineTo(x0 + innerW, y0);
+            c2.stroke();
+
+            for (let i = 0; i < n; i++) {
+              const bar = bars[i];
+              const h = (Math.abs(bar.value) / maxV) * (innerH - 38) * this.progress;
+              const x = x0 + i * (barW + gapPx);
+              const y = y0 - h;
+              this.layout.push({ label: String(bar.label || ""), x, y, w: barW, h });
+              c2.fillStyle = "rgba(124,58,237,0.55)";
+              roundedRectPath(c2, x, y, barW, h, 10);
+              c2.fill();
+              c2.fillStyle = "rgba(17,24,39,0.82)";
+              c2.font = "14px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial";
+              c2.textAlign = "center";
+              c2.textBaseline = "top";
+              c2.fillText(bar.label, x + barW / 2, y0 + 8, barW + 8);
+              this.anchor = { x: x + barW / 2, y };
+            }
+            c2.restore();
+          }
+          focus(c2, strength, labelText) {
+            const q = String(labelText || "").trim().toLowerCase();
+            if (!q || !Array.isArray(this.layout) || this.layout.length === 0) return false;
+            const found = this.layout.find((b) => String(b.label || "").trim().toLowerCase() === q)
+              || this.layout.find((b) => String(b.label || "").trim().toLowerCase().includes(q));
+            if (!found) return false;
+            c2.save();
+            c2.globalAlpha = 0.25 + 0.75 * strength;
+            c2.strokeStyle = "rgba(34,197,94,0.95)";
+            c2.lineWidth = 4;
+            roundedRectPath(c2, found.x - 4, found.y - 4, found.w + 8, found.h + 8, 12);
+            c2.stroke();
+            c2.restore();
+            return { x: found.x + found.w / 2, y: found.y };
+          }
+          getAnchor() { return this.anchor; }
+        }
+
+        let mode = "none";
+        let axesRange = { xmin: -5, xmax: 5, ymin: -5, ymax: 5 };
         let lastPen = { x: area.x + area.w * 0.5, y: area.y + area.h * 0.45 };
-        let barLayout = null;
-        let triangleLayout = null;
         let activeFocusUnresolved = false;
+        let focusCommand = null;
 
-        function ensureCartesian() {
-          if (mode !== "cartesian") {
-            mode = "cartesian";
-            resetLayer();
-            mapper = renderCartesianAxes(c, area, axes);
-          } else if (!mapper) {
-            mapper = renderCartesianAxes(c, area, axes);
-          }
-        }
-
-        function extractAxisRange(cmd, axisChar) {
-          const s = normalizeDrawText(cmd);
-
-          const dotdot = s.match(new RegExp(`${axisChar}\\s*[:=]\\s*([^\\s,;]+\\s*\\.\\.\\s*[^\\s,;]+)`, "i"));
-          if (dotdot) return parseRange(dotdot[1]);
-
-          const fromTo = s.match(new RegExp(`${axisChar}\\s*[:=]?\\s*from\\s+([^\\s,;]+)\\s+to\\s+([^\\s,;]+)`, "i"));
-          if (fromTo) return parseRange(`from ${fromTo[1]} to ${fromTo[2]}`);
-
-          return null;
-        }
-
-        function setAxesFromCommand(cmd) {
-          const xr = extractAxisRange(cmd, "x");
-          if (xr) { axes.xmin = xr.min; axes.xmax = xr.max; }
-          const yr = extractAxisRange(cmd, "y");
-          if (yr) { axes.ymin = yr.min; axes.ymax = yr.max; }
-        }
-
-        function drawLineElement(expr, t) {
-          if (!mapper) return;
-          c.save();
-          c.lineCap = "round";
-          c.lineJoin = "round";
-          c.strokeStyle = "rgba(124,58,237,0.95)";
-          c.lineWidth = 4;
-          const clampT = Math.max(0, Math.min(1, t));
-
-          if (expr.kind === "vertical") {
-            const x = mapper.mapX(expr.x);
-            const y1 = area.y + 14;
-            const y2 = area.y + area.h - 14;
-            const yy = y1 + (y2 - y1) * clampT;
-            c.beginPath();
-            c.moveTo(x, y1);
-            c.lineTo(x, yy);
-            c.stroke();
-            lastPen = { x, y: yy };
-          } else {
-            const x1m = axes.xmin;
-            const x2m = axes.xmax;
-            const y1m = expr.m * x1m + expr.b;
-            const y2m = expr.m * x2m + expr.b;
-            const x1 = mapper.mapX(x1m);
-            const y1 = mapper.mapY(y1m);
-            const x2 = mapper.mapX(x2m);
-            const y2 = mapper.mapY(y2m);
-            const x = x1 + (x2 - x1) * clampT;
-            const y = y1 + (y2 - y1) * clampT;
-            c.beginPath();
-            c.moveTo(x1, y1);
-            c.lineTo(x, y);
-            c.stroke();
-            lastPen = { x, y };
-          }
-          c.restore();
-        }
-
-        function drawPoint(pt, label, t) {
-          if (!mapper) return;
-          const clampT = Math.max(0, Math.min(1, t));
-          const x = mapper.mapX(pt.x);
-          const y = mapper.mapY(pt.y);
-          c.save();
-          c.globalAlpha = 0.2 + 0.8 * clampT;
-          c.fillStyle = "rgba(17,24,39,0.92)";
-          c.beginPath();
-          c.arc(x, y, 6, 0, Math.PI * 2);
-          c.fill();
-          c.restore();
-          lastPen = { x, y };
-
-          if (label) {
-            c.save();
-            c.globalAlpha = 0.2 + 0.8 * clampT;
-            c.fillStyle = "rgba(17,24,39,0.80)";
-            c.font = "16px 'Bradley Hand', 'Segoe Print', 'Comic Sans MS', ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial";
-            c.textAlign = "left";
-            c.textBaseline = "bottom";
-            c.fillText(label, x + 8, y - 6, area.w - 12);
-            c.restore();
-          }
-        }
-
-        function drawBarChart(bars, t) {
-          const clampT = Math.max(0, Math.min(1, t));
-          mode = "bar";
-          resetLayer();
-
-          const pad = 18;
-          const innerW = Math.max(10, area.w - pad * 2);
-          const innerH = Math.max(10, area.h - pad * 2);
-          const x0 = area.x + pad;
-          const y0 = area.y + area.h - pad;
-          const maxV = Math.max(1e-6, ...bars.map((b) => Math.abs(b.value)));
-
-          c.save();
-          c.strokeStyle = "rgba(17,24,39,0.55)";
-          c.lineWidth = 2.5;
-          c.beginPath();
-          c.moveTo(x0, y0);
-          c.lineTo(x0 + innerW, y0);
-          c.stroke();
-
-          const n = bars.length;
-          const gapPx = Math.max(8, Math.floor(innerW * 0.04));
-          const barW = n > 0 ? Math.max(10, Math.floor((innerW - gapPx * (n - 1)) / n)) : innerW;
-
-          barLayout = { bars: [] };
-          for (let i = 0; i < n; i++) {
-            const b = bars[i];
-            const h = (Math.abs(b.value) / maxV) * (innerH - 38) * clampT;
-            const x = x0 + i * (barW + gapPx);
-            const y = y0 - h;
-            barLayout.bars.push({ label: String(b.label || ""), x, y, w: barW, h });
-            c.fillStyle = "rgba(124,58,237,0.55)";
-            roundedRectPath(c, x, y, barW, h, 10);
-            c.fill();
-            c.fillStyle = "rgba(17,24,39,0.82)";
-            c.font = "14px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial";
-            c.textAlign = "center";
-            c.textBaseline = "top";
-            c.fillText(b.label, x + barW / 2, y0 + 8, barW + 8);
-            lastPen = { x: x + barW / 2, y };
-          }
-
-          c.restore();
-        }
-
-        function drawRightTriangle(a, b, labels, t) {
-          const clampT = Math.max(0, Math.min(1, t));
-          mode = "triangle";
-          resetLayer();
-
-          const pad = 22;
-          const maxW = area.w - pad * 2;
-          const maxH = area.h - pad * 2;
-          const scale = Math.max(1e-6, Math.min(maxW / a, maxH / b) * 0.82);
-          const x0 = area.x + pad;
-          const y0 = area.y + area.h - pad;
-
-          const p0 = { x: x0, y: y0 };
-          const p1 = { x: x0 + a * scale, y: y0 };
-          const p2 = { x: x0 + a * scale, y: y0 - b * scale };
-          triangleLayout = { p0, p1, p2 };
-
-          const seg = (from, to, tt) => {
-            const x = from.x + (to.x - from.x) * tt;
-            const y = from.y + (to.y - from.y) * tt;
-            c.beginPath();
-            c.moveTo(from.x, from.y);
-            c.lineTo(x, y);
-            c.stroke();
-            lastPen = { x, y };
-          };
-
-          c.save();
-          c.strokeStyle = "rgba(124,58,237,0.95)";
-          c.lineWidth = 4;
-          c.lineCap = "round";
-          c.lineJoin = "round";
-
-          if (clampT < 1 / 3) {
-            seg(p0, p1, clampT * 3);
-          } else if (clampT < 2 / 3) {
-            seg(p0, p1, 1);
-            seg(p1, p2, (clampT - 1 / 3) * 3);
-          } else {
-            seg(p0, p1, 1);
-            seg(p1, p2, 1);
-            seg(p2, p0, (clampT - 2 / 3) * 3);
-          }
-
-          c.restore();
-
-          if (clampT > 0.9) {
-            const baseLabel = (labels && labels.base) ? String(labels.base) : String(a);
-            const heightLabel = (labels && labels.height) ? String(labels.height) : String(b);
-            const hypLabel = (labels && labels.hyp) ? String(labels.hyp) : null;
-            c.save();
-            c.fillStyle = "rgba(17,24,39,0.78)";
-            c.font = "16px 'Bradley Hand', 'Segoe Print', 'Comic Sans MS', ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial";
-            c.textAlign = "center";
-            c.textBaseline = "middle";
-            c.fillText(baseLabel, (p0.x + p1.x) / 2, p0.y + 14, maxW);
-            c.fillText(heightLabel, p1.x + 14, (p1.y + p2.y) / 2, maxW);
-            if (hypLabel) c.fillText(hypLabel, (p0.x + p2.x) / 2 - 6, (p0.y + p2.y) / 2 - 10, maxW);
-            c.restore();
-          }
-        }
+        const shapesById = new Map();
+        const drawOrder = [];
+        let defaultAxesId = null;
+        let currentMapper = null;
 
         function drawFocusRing(x, y, strength) {
           const t = Math.max(0, Math.min(1, strength));
@@ -1033,283 +2287,525 @@ function wireAvatarVideoPlayer() {
           c.restore();
         }
 
-        function focusBar(label, strength) {
-          if (!barLayout || !Array.isArray(barLayout.bars) || barLayout.bars.length === 0) return false;
-          const q = String(label || "").trim().toLowerCase();
-          if (!q) return false;
-
-          const found = barLayout.bars.find((b) => String(b.label || "").trim().toLowerCase() === q)
-            || barLayout.bars.find((b) => String(b.label || "").trim().toLowerCase().includes(q));
-          if (!found) return false;
-
-          const cx = found.x + found.w / 2;
-          const cy = found.y;
-          c.save();
-          c.globalAlpha = 0.25 + 0.75 * Math.max(0, Math.min(1, strength));
-          c.strokeStyle = "rgba(34,197,94,0.95)";
-          c.lineWidth = 4;
-          roundedRectPath(c, found.x - 4, found.y - 4, found.w + 8, found.h + 8, 12);
-          c.stroke();
-          c.restore();
-          drawFocusRing(cx, cy, strength);
-          lastPen = { x: cx, y: cy };
-          return true;
+        function extractAxisRange(cmd, axisChar) {
+          const s = normalizeDrawText(cmd);
+          const dotdot = s.match(new RegExp(`${axisChar}\\s*[:=]\\s*([^\\s,;]+\\s*\\.\\.\\s*[^\\s,;]+)`, "i"));
+          if (dotdot) return parseRange(dotdot[1]);
+          const fromTo = s.match(new RegExp(`${axisChar}\\s*[:=]?\\s*from\\s+([^\\s,;]+)\\s+to\\s+([^\\s,;]+)`, "i"));
+          if (fromTo) return parseRange(`from ${fromTo[1]} to ${fromTo[2]}`);
+          return null;
         }
 
-        function focusTriangle(which, strength) {
-          if (!triangleLayout) return false;
-          const w = String(which || "").trim().toLowerCase();
-          const p0 = triangleLayout.p0;
-          const p1 = triangleLayout.p1;
-          const p2 = triangleLayout.p2;
+        function setAxesFromCommand(cmd) {
+          const xr = extractAxisRange(cmd, "x");
+          if (xr) { axesRange.xmin = xr.min; axesRange.xmax = xr.max; }
+          const yr = extractAxisRange(cmd, "y");
+          if (yr) { axesRange.ymin = yr.min; axesRange.ymax = yr.max; }
+        }
 
-          if (w.includes("angle") || w.includes("corner") || w.includes("box") || w.includes("square")) {
-            const x = p1.x;
-            const y = p1.y;
+        function readNamed(raw, key) {
+          const re = new RegExp(`\\b${key}\\s*[:=]\\s*([^\\s,;]+)`, "i");
+          const m = normalizeDrawText(raw).match(re);
+          return m ? parseNumeric(m[1]) : null;
+        }
 
-            c.save();
-            c.globalAlpha = 0.25 + 0.75 * Math.max(0, Math.min(1, strength));
-            c.strokeStyle = "rgba(34,197,94,0.95)";
-            c.lineWidth = 4;
-            c.beginPath();
-            const s = 16;
-            c.moveTo(x, y);
-            c.lineTo(x - s, y);
-            c.lineTo(x - s, y - s);
-            c.lineTo(x, y - s);
-            c.stroke();
-            c.restore();
+        function parseShapeId(raw, fallback) {
+          const text = normalizeDrawText(raw);
+          const byKey = text.match(/\bid\s*[:=]\s*([a-z0-9_-]+)/i);
+          if (byKey) return byKey[1];
+          const head = text.match(/^([a-z0-9_-]{2,})\s+/i);
+          if (head && !/^(right|line|point|bar|bars|triangle|circle|square|axes|axis|focus)$/i.test(head[1])) return head[1];
+          return fallback;
+        }
 
+        function registerShape(shape) {
+          if (!shape || !shape.id) return shape;
+          if (!shapesById.has(shape.id)) drawOrder.push(shape.id);
+          shapesById.set(shape.id, shape);
+          return shape;
+        }
+
+        function getShape(id) {
+          return id ? (shapesById.get(id) || null) : null;
+        }
+
+        function findLastShape(kind) {
+          for (let i = drawOrder.length - 1; i >= 0; i--) {
+            const shape = shapesById.get(drawOrder[i]);
+            if (shape && shape.kind === kind) return shape;
+          }
+          return null;
+        }
+
+        function ensureAxesShape(idHint) {
+          const id = idHint || defaultAxesId || "axes-main";
+          let shape = getShape(id);
+          if (!(shape instanceof AxesShape)) {
+            shape = registerShape(new AxesShape(id, axesRange));
+          } else {
+            shape.setRange(axesRange);
+          }
+          defaultAxesId = shape.id;
+          mode = "cartesian";
+          return shape;
+        }
+
+        function ensureCartesian() {
+          return ensureAxesShape(defaultAxesId || "axes-main");
+        }
+
+        function readMapper(axesId) {
+          if (axesId) {
+            const shape = getShape(axesId);
+            if (shape instanceof AxesShape && shape.mapper) return shape.mapper;
+          }
+          if (defaultAxesId) {
+            const shape = getShape(defaultAxesId);
+            if (shape instanceof AxesShape && shape.mapper) return shape.mapper;
+          }
+          return currentMapper;
+        }
+
+        function readBarsFromText(text) {
+          const tokens = String(text || "").split(/\s+/).filter(Boolean);
+          const out = [];
+          for (const token of tokens) {
+            const idx = token.includes("=") ? token.indexOf("=") : token.indexOf(":");
+            if (idx <= 0) continue;
+            const label = token.slice(0, idx).trim();
+            const value = parseNumeric(token.slice(idx + 1).trim());
+            if (!label || value === null) continue;
+            out.push({ label, value });
+          }
+          return out;
+        }
+
+        function renderScene() {
+          resetLayer();
+          currentMapper = null;
+          for (const id of drawOrder) {
+            const shape = shapesById.get(id);
+            if (!shape) continue;
+
+            if (shape instanceof AxesShape) {
+              mode = "cartesian";
+              shape.draw(c);
+              currentMapper = shape.mapper;
+              const a = shape.getAnchor();
+              if (a) lastPen = a;
+              continue;
+            }
+
+            if (shape instanceof LineShape) {
+              mode = "cartesian";
+              shape.draw(c, readMapper, axesRange);
+            } else if (shape instanceof PointShape) {
+              mode = "cartesian";
+              shape.draw(c, readMapper);
+            } else if (shape instanceof CircleShape) {
+              mode = "cartesian";
+              shape.draw(c, readMapper);
+            } else if (shape instanceof SquareShape) {
+              mode = "cartesian";
+              shape.draw(c, readMapper);
+            } else if (shape instanceof BarShape) {
+              mode = "bar";
+              shape.draw(c);
+            } else if (shape instanceof TriangleShape) {
+              mode = "triangle";
+              shape.draw(c);
+            } else {
+              shape.draw(c, readMapper, axesRange);
+            }
+
+            const anchor = shape.getAnchor ? shape.getAnchor() : null;
+            if (anchor) lastPen = anchor;
+          }
+        }
+
+        function resolveFocus(queryText, strength) {
+          const query = String(queryText || "").trim();
+          if (!query) return false;
+          const lower = query.toLowerCase();
+
+          const focusByShape = (shape, detail) => {
+            if (!shape) return false;
+            if (shape instanceof BarShape) {
+              const p = shape.focus(c, strength, detail || query);
+              if (!p) return false;
+              drawFocusRing(p.x, p.y, strength);
+              lastPen = { x: p.x, y: p.y };
+              return true;
+            }
+            if (shape instanceof TriangleShape) {
+              const p = shape.focus(c, strength, detail || query);
+              if (!p) return false;
+              drawFocusRing(p.x, p.y, strength);
+              lastPen = { x: p.x, y: p.y };
+              return true;
+            }
+            const anchor = shape.getAnchor ? shape.getAnchor() : null;
+            if (!anchor) return false;
+            drawFocusRing(anchor.x, anchor.y, strength);
+            lastPen = { x: anchor.x, y: anchor.y };
+            return true;
+          };
+
+          const idMatch = lower.match(/\bid\s*[:=]\s*([a-z0-9_-]+)/i);
+          if (idMatch) {
+            const byId = getShape(idMatch[1]);
+            if (focusByShape(byId, query)) return true;
+          }
+
+          if (lower.startsWith("bar ")) {
+            const bar = findLastShape("bar");
+            if (focusByShape(bar, query.slice(4).trim())) return true;
+          }
+          if (lower.startsWith("triangle ")) {
+            const tri = findLastShape("triangle");
+            if (focusByShape(tri, query.slice(9).trim())) return true;
+          }
+
+          if (lower.includes("circle")) {
+            if (focusByShape(findLastShape("circle"), query)) return true;
+          }
+          if (lower.includes("square")) {
+            if (focusByShape(findLastShape("square"), query)) return true;
+          }
+          if (lower.includes("line")) {
+            if (focusByShape(findLastShape("line"), query)) return true;
+          }
+          if (lower.includes("point")) {
+            if (focusByShape(findLastShape("point"), query)) return true;
+          }
+
+          const point = parsePoint(query.replace(/^point\s+/i, ""));
+          if (point) {
+            const m = readMapper(defaultAxesId);
+            if (!m) return false;
+            const x = m.mapX(point.x);
+            const y = m.mapY(point.y);
             drawFocusRing(x, y, strength);
             lastPen = { x, y };
             return true;
           }
 
-          let a = p2;
-          let b = p0;
-          if (w.includes("base") || w === "a" || w.includes("leg a") || w.includes("leg1")) { a = p0; b = p1; }
-          else if (w.includes("height") || w === "b" || w.includes("leg b") || w.includes("leg2")) { a = p1; b = p2; }
-          else if (w.includes("hyp") || w === "c" || w.includes("hypotenuse")) { a = p2; b = p0; }
+          const expr = parseLineExpr(query);
+          if (expr) {
+            const line = new LineShape("focus-line", expr, defaultAxesId).setProgress(Math.max(0.4, strength));
+            line.draw(c, readMapper, axesRange);
+            const a = line.getAnchor();
+            if (!a) return false;
+            drawFocusRing(a.x, a.y, strength);
+            lastPen = { x: a.x, y: a.y };
+            return true;
+          }
 
-          const mx = (a.x + b.x) / 2;
-          const my = (a.y + b.y) / 2;
-
-          c.save();
-          c.globalAlpha = 0.25 + 0.75 * Math.max(0, Math.min(1, strength));
-          c.strokeStyle = "rgba(34,197,94,0.95)";
-          c.lineWidth = 7;
-          c.lineCap = "round";
-          c.beginPath();
-          c.moveTo(a.x, a.y);
-          c.lineTo(b.x, b.y);
-          c.stroke();
-          c.restore();
-
-          drawFocusRing(mx, my, strength);
-          lastPen = { x: mx, y: my };
-          return true;
+          return false;
         }
 
         for (let i = 0; i <= activeIdx && i < stepsArr.length; i++) {
           const step = stepsArr[i];
           if (!step || step.kind !== "draw") continue;
 
-          const progressT = (i === activeIdx && step.kind === "draw") ? activeT : 1;
+          const progressT = (i === activeIdx) ? activeT : 1;
           const cmd = normalizeDrawText(step.command).trim();
           if (!cmd) continue;
-
           const parts = cmd.split(/\s+/).filter(Boolean);
-          const op = (parts.length > 0 ? parts[0] : "").toLowerCase().replace(/[^a-z]/g, "");
+          const op = (parts[0] || "").toLowerCase().replace(/[^a-z]/g, "");
           const rest = parts.slice(1).join(" ");
 
           if (op === "focus" || op === "highlight" || op === "pointat") {
-            if (i !== activeIdx) continue;
-
-            const strength = progressT;
-            const restNorm = normalizeDrawText(rest).trim();
-            const lower = restNorm.toLowerCase();
-            let resolved = false;
-
-            if (mode === "bar") {
-              const label = lower.startsWith("bar ") ? restNorm.slice(4).trim() : restNorm;
-              if (focusBar(label, strength)) { resolved = true; continue; }
-            }
-
-            if (mode === "triangle") {
-              const which = lower.replace(/^triangle\s+/, "").trim();
-              if (focusTriangle(which || "hyp", strength)) { resolved = true; continue; }
-            }
-
-            if (mode === "cartesian" && mapper) {
-              const cleaned = restNorm.replace(/^point\s+/i, "");
-              const pt = parsePoint(cleaned);
-              if (pt) {
-                // Ensure there's something visible where we're pointing.
-                drawPoint(pt, null, Math.max(0.6, Math.min(1, strength)));
-
-                const x = mapper.mapX(pt.x);
-                const y = mapper.mapY(pt.y);
-                drawFocusRing(x, y, strength);
-                lastPen = { x, y };
-                resolved = true;
-                continue;
-              }
-
-              const expr = parseLineExpr(restNorm);
-              if (expr && expr.kind === "slopeIntercept") {
-                // Draw a little of the line so the focus isn't "empty".
-                drawLineElement(expr, Math.max(0.4, Math.min(1, strength)));
-
-                const px = mapper.mapX(0);
-                const py = mapper.mapY(expr.b);
-                drawFocusRing(px, py, strength);
-                lastPen = { x: px, y: py };
-                resolved = true;
-                continue;
-              }
-            }
-
-            if (!resolved) {
-              // If we can't resolve what to focus, don't point at "nothing".
-              activeFocusUnresolved = true;
-            }
+            if (i === activeIdx) focusCommand = { query: rest, strength: progressT };
             continue;
           }
 
           if (op === "clear" || op === "reset") {
             mode = "none";
-            mapper = null;
-            axes = { xmin: -5, xmax: 5, ymin: -5, ymax: 5 };
-            resetLayer();
+            axesRange = { xmin: -5, xmax: 5, ymin: -5, ymax: 5 };
+            currentMapper = null;
+            defaultAxesId = null;
+            drawOrder.length = 0;
+            shapesById.clear();
             continue;
           }
 
           if (op === "axes" || op === "axis" || op === "grid" || op === "plane" || op === "coordinate") {
-            mode = "cartesian";
             setAxesFromCommand(rest);
-            resetLayer();
-            mapper = renderCartesianAxes(c, area, axes);
-            lastPen = { x: area.x + area.w * 0.5, y: area.y + area.h * 0.5 };
+            const id = parseShapeId(rest, `axes-${i + 1}`);
+            const shape = ensureAxesShape(id).setRange(axesRange).setProgress(progressT);
+            registerShape(shape);
             continue;
           }
 
           if (op === "line" || op === "graph" || op === "plot" || op === "sketch") {
             ensureCartesian();
             const expr = parseLineExpr(rest);
-            if (expr) drawLineElement(expr, progressT);
+            if (!expr) continue;
+            const id = parseShapeId(rest, `line-${i + 1}`);
+            let shape = getShape(id);
+            if (!(shape instanceof LineShape)) shape = registerShape(new LineShape(id, expr, defaultAxesId));
+            shape.setAxes(defaultAxesId).setEquation(expr).setProgress(progressT);
             continue;
           }
 
           if (op === "point" || op === "dot") {
             ensureCartesian();
             const pt = parsePoint(rest);
+            if (!pt) continue;
             const labelMatch = normalizeDrawText(rest).match(/label\s*[:=]\s*(.+)$/i);
             const label = labelMatch ? String(labelMatch[1] || "").trim().replace(/^\"|\"$/g, "") : null;
-            if (pt) drawPoint(pt, label, progressT);
+            const id = parseShapeId(rest, `point-${i + 1}`);
+            let shape = getShape(id);
+            if (!(shape instanceof PointShape)) shape = registerShape(new PointShape(id, pt, label, defaultAxesId));
+            shape.setAxes(defaultAxesId).setPoint(pt).setLabel(label).setProgress(progressT);
+            continue;
+          }
+
+          if (op === "circle") {
+            ensureCartesian();
+            const id = parseShapeId(rest, `circle-${i + 1}`);
+            let shape = getShape(id);
+            if (!(shape instanceof CircleShape)) shape = registerShape(new CircleShape(id, defaultAxesId));
+            const center = parsePoint(rest);
+            if (center) shape.setCenter(center.x, center.y);
+            const r = readNamed(rest, "r") ?? readNamed(rest, "radius");
+            if (r !== null) shape.setRadius(Math.abs(r));
+            const startDeg = readNamed(rest, "start") ?? readNamed(rest, "from");
+            const endDeg = readNamed(rest, "end") ?? readNamed(rest, "to");
+            if (startDeg !== null || endDeg !== null) shape.setAngles(startDeg, endDeg);
+            shape.setAxes(defaultAxesId).setProgress(progressT);
+            continue;
+          }
+
+          if (op === "square") {
+            ensureCartesian();
+            const id = parseShapeId(rest, `square-${i + 1}`);
+            let shape = getShape(id);
+            if (!(shape instanceof SquareShape)) shape = registerShape(new SquareShape(id, defaultAxesId));
+            const center = parsePoint(rest);
+            if (center) shape.setCenter(center.x, center.y);
+            const size = readNamed(rest, "size") ?? readNamed(rest, "side") ?? readNamed(rest, "s");
+            if (size !== null) shape.setSize(Math.abs(size));
+            const rot = readNamed(rest, "angle") ?? readNamed(rest, "rotation") ?? readNamed(rest, "rot");
+            if (rot !== null) shape.setRotation(rot);
+            shape.setAxes(defaultAxesId).setProgress(progressT);
             continue;
           }
 
           if (op === "bar" || op === "bars") {
-            const tokens = rest.split(/\s+/).filter(Boolean);
-            const bars = [];
-            for (const t of tokens) {
-              const eq = t.includes("=") ? t.indexOf("=") : t.indexOf(":");
-              if (eq <= 0) continue;
-              const label = t.slice(0, eq).trim();
-              const valueRaw = t.slice(eq + 1).trim();
-              const value = parseNumeric(valueRaw);
-              if (!label || value === null) continue;
-              bars.push({ label, value });
-            }
-            if (bars.length > 0) drawBarChart(bars, progressT);
+            const bars = readBarsFromText(rest);
+            if (bars.length === 0) continue;
+            const id = parseShapeId(rest, `bar-${i + 1}`);
+            let shape = getShape(id);
+            if (!(shape instanceof BarShape)) shape = registerShape(new BarShape(id));
+            shape.setBars(bars).setProgress(progressT);
+            mode = "bar";
             continue;
           }
 
           if (op === "triangle") {
+            const id = parseShapeId(rest, `triangle-${i + 1}`);
+            let shape = getShape(id);
+            if (!(shape instanceof TriangleShape)) shape = registerShape(new TriangleShape(id));
+
             const cleaned = normalizeDrawText(rest).replace(/[;,]/g, " ").replace(/\s+/g, " ").trim();
-            const rawTokens = cleaned.split(" ").filter(Boolean);
-            const tokens = rawTokens.filter((t) => {
-              const k = t.toLowerCase().replace(/[^a-z]/g, "");
-              return k !== "right" && k !== "legs" && k !== "leg" && k !== "hypotenuse" && k !== "hyp" && k !== "and" && k !== "with";
-            });
+            const numbers = (cleaned.match(/-?\d+(?:\.\d+)?/g) || [])
+              .map((n) => parseNumeric(n))
+              .filter((v) => v !== null);
 
-            const aNum = tokens.length > 0 ? parseNumeric(tokens[0]) : null;
-            const bNum = tokens.length > 1 ? parseNumeric(tokens[1]) : null;
-            const hypToken = tokens.length > 2 ? String(tokens[2]) : "";
-
-            const a = (aNum !== null && aNum > 0) ? aNum : 4;
-            const b = (bNum !== null && bNum > 0) ? bNum : 3;
-            const labels = {
-              base: (aNum !== null ? String(aNum) : (tokens[0] ? String(tokens[0]) : "a")),
-              height: (bNum !== null ? String(bNum) : (tokens[1] ? String(tokens[1]) : "b")),
-              hyp: hypToken ? hypToken : "c"
-            };
-
-            drawRightTriangle(a, b, labels, progressT);
+            const lower = cleaned.toLowerCase();
+            if (lower.includes("angle")) {
+              const a1 = numbers.length > 0 ? numbers[0] : null;
+              const a2 = numbers.length > 1 ? numbers[1] : null;
+              const a3 = numbers.length > 2 ? numbers[2] : null;
+              shape.setAngles(a1, a2, a3);
+            } else {
+              const a = (numbers.length > 0 && numbers[0] > 0) ? numbers[0] : 4;
+              const b = (numbers.length > 1 && numbers[1] > 0) ? numbers[1] : 3;
+              const labels = {
+                base: numbers.length > 0 ? String(numbers[0]) : "a",
+                height: numbers.length > 1 ? String(numbers[1]) : "b",
+                hyp: numbers.length > 2 ? String(numbers[2]) : "c"
+              };
+              shape.setSides(a, b, labels);
+            }
+            shape.setProgress(progressT);
+            mode = "triangle";
             continue;
           }
 
-          // Fallback: try to infer common draw intents from the text.
+          if (op === "move" || op === "shift") {
+            const id = parseShapeId(rest, "");
+            const shape = getShape(id);
+            if (!shape) continue;
+            const pt = parsePoint(rest);
+            if (pt) {
+              shape.setPosition(pt.x, pt.y);
+            } else {
+              const dx = readNamed(rest, "dx");
+              const dy = readNamed(rest, "dy");
+              shape.moveBy(dx || 0, dy || 0);
+            }
+            shape.setProgress(progressT);
+            continue;
+          }
+
           const lowerCmd = cmd.toLowerCase();
           if (lowerCmd.includes("..") && (lowerCmd.includes("x") || lowerCmd.includes("y"))) {
-            mode = "cartesian";
             setAxesFromCommand(cmd);
-            resetLayer();
-            mapper = renderCartesianAxes(c, area, axes);
-            lastPen = { x: area.x + area.w * 0.5, y: area.y + area.h * 0.5 };
+            ensureAxesShape(`axes-${i + 1}`).setRange(axesRange).setProgress(progressT);
             continue;
           }
-
           if (lowerCmd.includes("y=") || lowerCmd.includes("x=") || (lowerCmd.includes("=") && lowerCmd.includes("x") && lowerCmd.includes("y"))) {
             ensureCartesian();
             const expr = parseLineExpr(cmd);
-            if (expr) drawLineElement(expr, progressT);
+            if (!expr) continue;
+            const id = `line-${i + 1}`;
+            const shape = registerShape(new LineShape(id, expr, defaultAxesId).setProgress(progressT));
+            shape.setAxes(defaultAxesId).setEquation(expr);
             continue;
           }
-
           if (lowerCmd.includes("(") && lowerCmd.includes(",") && lowerCmd.includes(")")) {
             ensureCartesian();
             const pt = parsePoint(cmd);
-            if (pt) drawPoint(pt, null, progressT);
+            if (!pt) continue;
+            registerShape(new PointShape(`point-${i + 1}`, pt, null, defaultAxesId).setProgress(progressT));
             continue;
           }
+        }
+
+        renderScene();
+
+        if (focusCommand) {
+          const focused = resolveFocus(focusCommand.query, focusCommand.strength);
+          if (!focused) activeFocusUnresolved = true;
         }
 
         return activeFocusUnresolved ? { penX: null, penY: null } : { penX: lastPen.x, penY: lastPen.y };
       }
 
+      const textRows = [];
       for (let i = 0; i < activeLine && i < total; i++) {
         const step = steps[i];
-        if (!step) continue;
-        if (step.kind === "text") drawLine(step.text, false);
+        if (!step || !shouldRenderStep(i, step)) continue;
+        if (step.kind === "text") textRows.push({ text: step.text, isActive: false });
       }
 
       let activeLocal = 0;
       let activeStep = null;
       if (activeLine >= 0 && activeLine < total) {
-        const startAt = timings[activeLine];
-        const endAt = (activeLine + 1 < total) ? timings[activeLine + 1] : 1.0;
-        activeLocal = endAt > startAt ? (progress - startAt) / (endAt - startAt) : 1.0;
-        activeLocal = Math.max(0, Math.min(1, activeLocal));
         activeStep = steps[activeLine];
-        if (activeStep && activeStep.kind === "text") {
+        if (timestampSeconds && Number.isFinite(timestampSeconds[activeLine])) {
+          const startSeconds = timestampSeconds[activeLine];
+          let endSeconds = null;
+          for (let i = activeLine + 1; i < total; i++) {
+            if (Number.isFinite(timestampSeconds[i])) {
+              endSeconds = timestampSeconds[i];
+              break;
+            }
+          }
+
+          if (!Number.isFinite(endSeconds) || endSeconds <= startSeconds) {
+            const activeAudio = mode === "qa" ? qaAudio : audio;
+            const fallbackDuration = mode === "qa"
+              ? (qaDurationSeconds > 0 ? qaDurationSeconds : (startSeconds + 1.0))
+              : estimateDurationSeconds();
+            const durationSeconds = (activeAudio && Number.isFinite(activeAudio.duration) && activeAudio.duration > 0)
+              ? activeAudio.duration
+              : fallbackDuration;
+            endSeconds = Math.max(startSeconds + 0.8, durationSeconds);
+          }
+
+          const spanSeconds = Math.max(0.18, endSeconds - startSeconds);
+          activeLocal = clamp01((narrationSeconds - startSeconds) / spanSeconds);
+        } else {
+          const sync = (syncPlan && syncPlan[activeLine]) ? syncPlan[activeLine] : null;
+          if (sync) {
+            const span = Math.max(1, sync.endChar - sync.startChar);
+            activeLocal = clamp01((spokenCharIndex - sync.startChar) / span);
+            if (activeStep && activeStep.kind === "text" && !sync.matched)
+              activeLocal = 1;
+          } else {
+            const startAt = timings[activeLine];
+            const endAt = (activeLine + 1 < total) ? timings[activeLine + 1] : 1.0;
+            activeLocal = endAt > startAt ? (progress - startAt) / (endAt - startAt) : 1.0;
+            activeLocal = clamp01(activeLocal);
+          }
+        }
+
+        // Heuristic sync still benefits from slightly faster diagram completion.
+        if ((!timestampSeconds || !Number.isFinite(timestampSeconds[activeLine])) && activeStep && activeStep.kind === "draw")
+          activeLocal = clamp01(activeLocal * 1.25);
+
+        if (activeStep && activeStep.kind === "text" && shouldRenderStep(activeLine, activeStep)) {
           const line = activeStep.text;
           const count = Math.max(0, Math.min(line.length, Math.floor(line.length * activeLocal)));
           const partialText = count > 0 ? line.substring(0, count) : "";
-          drawLine(partialText, true);
-
-          // Cursor
-          if (partialText.length > 0) {
-            const metrics = ctx.measureText(partialText);
-            const cx = x0 + Math.min(metrics.width, maxWidth - 4);
-            const cy = y0;
-            ctx.fillStyle = "rgba(124,58,237,0.9)";
-            ctx.fillRect(cx, cy + 4, 6, 22);
-            ctx.fillStyle = "#111827";
-            penX = cx;
-            penY = cy + 16;
-          }
+          textRows.push({ text: partialText, isActive: true });
         }
+      }
+
+      const maxRowsVisible = Math.max(1, Math.floor(textArea.h / lineHeight) - 1);
+      boardScrollMaxRows = Math.max(0, textRows.length - maxRowsVisible);
+      if (boardScrollRows > boardScrollMaxRows) boardScrollRows = boardScrollMaxRows;
+      if (boardScrollRows < 0) boardScrollRows = 0;
+      if (boardScrollMaxRows > 0) maxWidth = Math.max(80, maxWidth - 12);
+
+      const firstVisibleRow = Math.max(0, textRows.length - maxRowsVisible - boardScrollRows);
+      const visibleRows = textRows.slice(firstVisibleRow, firstVisibleRow + maxRowsVisible);
+      for (const row of visibleRows) {
+        if (y0 > textArea.y + textArea.h - lineHeight) break;
+        const rowText = String(row && row.text ? row.text : "");
+        ctx.fillText(rowText, x0, y0, maxWidth);
+        if (row && row.isActive) {
+          const metrics = ctx.measureText(rowText);
+          const cx = x0 + Math.min(metrics.width, maxWidth - 4);
+          const cy = y0;
+          ctx.fillStyle = "rgba(124,58,237,0.9)";
+          ctx.fillRect(cx, cy + 4, 6, 22);
+          ctx.fillStyle = "#111827";
+          penX = cx;
+          penY = cy + 16;
+        }
+        y0 += lineHeight;
+      }
+
+      if (boardScrollMaxRows > 0) {
+        const trackW = 5;
+        const trackPad = 4;
+        const trackX = textArea.x + textArea.w - trackW - 2;
+        const trackY = textArea.y + trackPad;
+        const trackH = Math.max(24, textArea.h - trackPad * 2);
+        const thumbH = Math.max(26, Math.round((maxRowsVisible / Math.max(1, textRows.length)) * trackH));
+        const travel = Math.max(1, trackH - thumbH);
+        const ratio = boardScrollMaxRows > 0 ? (boardScrollRows / boardScrollMaxRows) : 0;
+        const thumbY = trackY + Math.round((1 - ratio) * travel);
+        const hitPadX = 8;
+
+        boardScrollbarViewport = {
+          trackX,
+          trackY,
+          trackW,
+          trackH,
+          travel,
+          thumbY,
+          thumbH,
+          hitX: trackX - hitPadX,
+          hitY: trackY,
+          hitW: trackW + hitPadX * 2,
+          hitH: trackH,
+          thumbHitX: trackX - hitPadX,
+          thumbHitW: trackW + hitPadX * 2
+        };
+
+        ctx.fillStyle = "rgba(17,24,39,0.10)";
+        ctx.fillRect(trackX, trackY, trackW, trackH);
+        ctx.fillStyle = "rgba(17,24,39,0.40)";
+        ctx.fillRect(trackX, thumbY, trackW, thumbH);
+      } else {
+        boardScrollbarViewport = null;
+        clearScrollbarDrag();
       }
 
       // Diagram rendering (supports animated drawing while active)
@@ -1323,48 +2819,14 @@ function wireAvatarVideoPlayer() {
 
       ctx.restore();
 
-      // "Body language": point to the line being written.
-      if (penX !== null && penY !== null) {
-        const handX = teacher.x + teacher.w - 26;
-        const handY = teacher.y + teacher.h * 0.72;
-        const wiggle = Math.sin(elapsed * 6.0) * 1.8;
-        const hx = handX + wiggle;
-        const hy = handY - speak * 2.5;
-
-        ctx.save();
-        ctx.lineCap = "round";
-
-        // Shadow
-        ctx.strokeStyle = "rgba(0,0,0,0.25)";
-        ctx.lineWidth = 10;
-        ctx.beginPath();
-        ctx.moveTo(hx, hy);
-        ctx.lineTo(penX, penY);
-        ctx.stroke();
-
-        // Pointer line
-        ctx.strokeStyle = "rgba(17,24,39,0.62)";
-        ctx.lineWidth = 6;
-        ctx.beginPath();
-        ctx.moveTo(hx, hy);
-        ctx.lineTo(penX, penY);
-        ctx.stroke();
-
-        // Marker tip
-        ctx.fillStyle = "rgba(124,58,237,0.95)";
-        ctx.beginPath();
-        ctx.ellipse(penX, penY, 10, 6, 0, 0, Math.PI * 2);
-        ctx.fill();
-
-        ctx.restore();
-      }
-
       // Watermark (AI-generated)
       ctx.fillStyle = "rgba(255,255,255,0.70)";
       ctx.font = "13px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial";
       ctx.textAlign = "left";
       ctx.textBaseline = "alphabetic";
-      ctx.fillText("AI-generated teacher + whiteboard", 16, h - 16);
+      ctx.fillText("AI-generated whiteboard", 16, h - 16);
+
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
     };
 
     raf = requestAnimationFrame(draw);
@@ -1374,6 +2836,22 @@ function wireAvatarVideoPlayer() {
     if (!raf) return;
     cancelAnimationFrame(raf);
     raf = 0;
+  }
+
+  function refreshBoardFrame() {
+    const alreadyRunning = !!raf;
+    startLoop();
+    if (alreadyRunning) return;
+
+    window.setTimeout(() => {
+      if (raf && mode === "qa" && !qaIsSpeaking && !qaAudio) {
+        stopLoop();
+        return;
+      }
+      if (raf && mode === "lesson" && !lessonIsPlaying()) {
+        stopLoop();
+      }
+    }, 90);
   }
 
   async function ensureAnalyser() {
@@ -1395,29 +2873,65 @@ function wireAvatarVideoPlayer() {
     updateSpeedLabel();
     startLoop();
 
-    if (audio) {
+    const boundaryLesson = useBoundaryLessonNarration();
+    if (audio && !boundaryLesson) {
+      if (hasSpeechSynthesis) {
+        try { window.speechSynthesis.cancel(); } catch { /* ignore */ }
+      }
+      manualIsPlaying = false;
+      manualIsPaused = false;
+      manualPlayStart = 0;
+      manualElapsedSeconds = 0;
+      manualUtterance = null;
+      manualSpeechProgress = 0;
+      manualSpeechCharIndex = 0;
+      manualHasSpeechBoundary = false;
       await ensureAnalyser();
       if (audioCtx && audioCtx.state === "suspended") await audioCtx.resume();
       await audio.play();
       return;
     }
+    if (audio && boundaryLesson) {
+      try { audio.pause(); } catch { /* ignore */ }
+      try { audio.currentTime = 0; } catch { /* ignore */ }
+    }
 
-    if (!("speechSynthesis" in window)) return;
+    if (!hasSpeechSynthesis) return;
     const text = scriptText || "";
     if (!text) return;
+
+    if (manualIsPlaying && !manualIsPaused) return;
+    if (manualIsPlaying && manualIsPaused) {
+      manualPlayStart = performance.now();
+      manualIsPaused = false;
+      try { window.speechSynthesis.resume(); } catch { /* ignore */ }
+      return;
+    }
 
     window.speechSynthesis.cancel();
     manualElapsedSeconds = 0;
     manualPlayStart = performance.now();
     manualIsPaused = false;
     manualIsPlaying = true;
+    manualSpeechProgress = 0;
+    manualSpeechCharIndex = 0;
+    manualHasSpeechBoundary = false;
     manualUtterance = new SpeechSynthesisUtterance(text);
     manualUtterance.rate = getSpeed();
+    manualUtterance.onboundary = (evt) => {
+      if (!evt || !Number.isFinite(evt.charIndex) || text.length <= 0) return;
+      manualHasSpeechBoundary = true;
+      manualSpeechCharIndex = Math.max(manualSpeechCharIndex, Math.floor(evt.charIndex));
+      manualSpeechProgress = Math.max(manualSpeechProgress, timelineProgressAtChar(lessonSpeechTimeline, manualSpeechCharIndex));
+    };
     manualUtterance.onend = () => {
       manualElapsedSeconds = estimateDurationSeconds();
       manualIsPlaying = false;
       manualIsPaused = false;
       manualPlayStart = 0;
+      manualSpeechCharIndex = text.length;
+      manualSpeechProgress = 1;
+      manualHasSpeechBoundary = true;
     };
     window.speechSynthesis.speak(manualUtterance);
   }
@@ -1429,44 +2943,57 @@ function wireAvatarVideoPlayer() {
       finishQa({ resumeLessonAfter: false });
     }
 
-    if (audio) {
+    const boundaryLesson = useBoundaryLessonNarration();
+    if (audio && !boundaryLesson) {
       audio.pause();
       audio.currentTime = 0;
-    } else if ("speechSynthesis" in window) {
+    } else if (audio && boundaryLesson) {
+      try { audio.pause(); } catch { /* ignore */ }
+      try { audio.currentTime = 0; } catch { /* ignore */ }
+    }
+
+    if (hasSpeechSynthesis && (!audio || boundaryLesson)) {
       window.speechSynthesis.cancel();
       manualIsPlaying = false;
       manualPlayStart = 0;
       manualElapsedSeconds = 0;
       manualIsPaused = false;
       manualUtterance = null;
+      manualSpeechProgress = 0;
+      manualSpeechCharIndex = 0;
+      manualHasSpeechBoundary = false;
     }
     stopLoop();
   }
 
   function progressFractionNow() {
     const est = estimateDurationSeconds();
-    if (audio) {
+    const boundaryLesson = useBoundaryLessonNarration();
+    if (audio && !boundaryLesson) {
       const cur = Number.isFinite(audio.currentTime) ? audio.currentTime : 0;
       const dur = (Number.isFinite(audio.duration) && audio.duration > 0) ? audio.duration : est;
       return dur > 0 ? Math.min(1, Math.max(0, cur / dur)) : 0;
     }
 
     const seconds = manualElapsedSeconds + (manualPlayStart > 0 ? (performance.now() - manualPlayStart) / 1000 : 0);
-    return est > 0 ? Math.min(1, Math.max(0, seconds / est)) : 0;
+    const fallback = est > 0 ? Math.min(1, Math.max(0, seconds / est)) : 0;
+    const fallbackChar = timelineCharAtProgress(lessonSpeechTimeline, fallback);
+    const charIdx = manualHasSpeechBoundary ? Math.max(manualSpeechCharIndex, fallbackChar) : fallbackChar;
+    return timelineProgressAtChar(lessonSpeechTimeline, charIdx);
   }
 
   function lessonIsPlaying() {
-    if (audio) return !audio.paused && !audio.ended;
+    if (audio && !useBoundaryLessonNarration()) return !audio.paused && !audio.ended;
     return manualIsPlaying && !manualIsPaused;
   }
 
   function pauseLesson() {
-    if (audio) {
+    if (audio && !useBoundaryLessonNarration()) {
       if (!audio.paused) audio.pause();
       return;
     }
 
-    if ("speechSynthesis" in window) {
+    if (hasSpeechSynthesis) {
       if (manualIsPlaying && !manualIsPaused) {
         if (manualPlayStart > 0) {
           manualElapsedSeconds += (performance.now() - manualPlayStart) / 1000;
@@ -1479,14 +3006,14 @@ function wireAvatarVideoPlayer() {
   }
 
   async function resumeLesson() {
-    if (audio) {
+    if (audio && !useBoundaryLessonNarration()) {
       if (audio.paused && !audio.ended) {
         try { await audio.play(); } catch { /* ignore */ }
       }
       return;
     }
 
-    if ("speechSynthesis" in window) {
+    if (hasSpeechSynthesis) {
       if (manualIsPlaying && manualIsPaused) {
         manualPlayStart = performance.now();
         manualIsPaused = false;
@@ -1539,7 +3066,18 @@ function wireAvatarVideoPlayer() {
     mode = "lesson";
     boardLines = lessonBoardLines.slice();
     boardTimings = lessonBoardTimings.slice();
+    boardTimestampSeconds = lessonBoardTimestampSeconds.slice();
+    resetBoardScroll();
     rebuildBoardSteps();
+    if (!lessonSpeechTimeline) lessonSpeechTimeline = createSpeechTimeline(scriptText);
+    boardTimings = buildSpeechSyncedTimings(scriptText, boardSteps, boardTimings, lessonSpeechTimeline);
+    const restoredLessonTimestampSeconds = resolveTimestampSeconds(boardTimestampSeconds, boardSteps.length, estimateDurationSeconds());
+    const hasLessonTimestampSeconds = restoredLessonTimestampSeconds.length === boardSteps.length && boardSteps.length > 0;
+    lessonStepSyncPlan = hasLessonTimestampSeconds
+      ? []
+      : buildStepSyncPlan(scriptText, boardSteps, boardTimings, lessonSpeechTimeline);
+    stepSyncPlan = lessonStepSyncPlan.slice();
+    renderBoardTimingPlan();
   }
 
   function finishQa({ resumeLessonAfter } = { resumeLessonAfter: true }) {
@@ -1555,6 +3093,12 @@ function wireAvatarVideoPlayer() {
     qaElapsedSeconds = qaDurationSeconds;
     qaDurationSeconds = 0;
     qaUtterance = null;
+    qaSpeechTimeline = null;
+    qaSpeechProgress = 0;
+    qaSpeechCharIndex = 0;
+    qaHasSpeechBoundary = false;
+    qaNarrationText = "";
+    qaStepSyncPlan = [];
     understoodBtn && (understoodBtn.hidden = true);
 
     restoreLessonBoard();
@@ -1570,28 +3114,65 @@ function wireAvatarVideoPlayer() {
     }
   }
 
+  function speakQaNarration(narration) {
+    const text = String(narration || "").trim();
+    if (!text || !hasSpeechSynthesis) return;
+    qaSpeechProgress = 0;
+    qaSpeechCharIndex = 0;
+    qaHasSpeechBoundary = false;
+    try { window.speechSynthesis.cancel(); } catch { /* ignore */ }
+    qaUtterance = new SpeechSynthesisUtterance(text);
+    qaUtterance.rate = getSpeed();
+    qaUtterance.onboundary = (evt) => {
+      if (!evt || !Number.isFinite(evt.charIndex) || text.length <= 0) return;
+      qaHasSpeechBoundary = true;
+      qaSpeechCharIndex = Math.max(qaSpeechCharIndex, Math.floor(evt.charIndex));
+      qaSpeechProgress = Math.max(qaSpeechProgress, timelineProgressAtChar(qaSpeechTimeline, qaSpeechCharIndex));
+    };
+    qaUtterance.onend = () => {
+      qaSpeechCharIndex = text.length;
+      qaSpeechProgress = 1;
+      qaHasSpeechBoundary = true;
+      finishQa({ resumeLessonAfter: true });
+    };
+    qaUtterance.onerror = () => finishQa({ resumeLessonAfter: true });
+    window.speechSynthesis.speak(qaUtterance);
+  }
+
   function startQaSegment(pack) {
     const narration = (pack && pack.narration) ? String(pack.narration || "").trim() : "";
+    qaNarrationText = narration;
     const audioUrl = (pack && pack.audioUrl) ? String(pack.audioUrl || "").trim() : "";
     let qaLines = Array.isArray(pack && pack.boardLines) ? pack.boardLines : [];
     qaLines = qaLines.map((s) => String(s || "").trim()).filter((s) => s.length > 0);
 
-    if (qaLines.length === 0 && narration) {
-      const rawLines = narration.split("\n").map((l) => l.trim()).filter((l) => l.length > 0);
-      qaLines = rawLines.filter((l) => l.length <= 56).slice(0, 12);
-    }
-
     let qaTimings = Array.isArray(pack && pack.boardTimings) ? pack.boardTimings : [];
     qaTimings = sanitizeTimings(qaTimings, qaLines.length);
+    const qaFallbackDurationSeconds = estimateSpeechSeconds(narration, getSpeed());
+    let qaTimestampSeconds = Array.isArray(pack && pack.boardTimestampSeconds) ? pack.boardTimestampSeconds : [];
+    const resolvedQaTimestampSeconds = resolveTimestampSeconds(qaTimestampSeconds, qaLines.length, qaFallbackDurationSeconds);
 
     boardLines = qaLines;
     boardTimings = qaTimings;
+    boardTimestampSeconds = qaTimestampSeconds;
+    resetBoardScroll();
     rebuildBoardSteps();
+    qaSpeechTimeline = createSpeechTimeline(narration);
+    boardTimings = buildSpeechSyncedTimings(narration, boardSteps, boardTimings, qaSpeechTimeline);
+    const hasQaTimestampSeconds = resolvedQaTimestampSeconds.length === boardSteps.length && boardSteps.length > 0;
+    qaStepSyncPlan = hasQaTimestampSeconds
+      ? []
+      : buildStepSyncPlan(narration, boardSteps, boardTimings, qaSpeechTimeline);
+    stepSyncPlan = qaStepSyncPlan.slice();
     mode = "qa";
     qaElapsedSeconds = 0;
-    qaDurationSeconds = estimateSpeechSeconds(narration, getSpeed());
+    qaDurationSeconds = qaFallbackDurationSeconds;
+    renderBoardTimingPlan();
     qaPlayStart = performance.now();
     qaIsSpeaking = true;
+    qaSpeechProgress = 0;
+    qaSpeechCharIndex = 0;
+    qaHasSpeechBoundary = false;
 
     askBtn && (askBtn.disabled = true);
     playBtn && (playBtn.disabled = true);
@@ -1605,6 +3186,11 @@ function wireAvatarVideoPlayer() {
       qaAudio = null;
     }
 
+    if (useBoundaryQaNarration(narration)) {
+      speakQaNarration(narration);
+      return;
+    }
+
     if (audioUrl && typeof Audio !== "undefined") {
       qaAudio = new Audio(audioUrl);
       qaAudio.preload = "auto";
@@ -1612,6 +3198,7 @@ function wireAvatarVideoPlayer() {
       qaAudio.addEventListener("loadedmetadata", () => {
         if (qaAudio && Number.isFinite(qaAudio.duration) && qaAudio.duration > 0)
           qaDurationSeconds = qaAudio.duration;
+        renderBoardTimingPlan();
       });
       qaAudio.addEventListener("play", () => { qaIsSpeaking = true; });
       qaAudio.addEventListener("pause", () => { qaIsSpeaking = false; });
@@ -1623,7 +3210,7 @@ function wireAvatarVideoPlayer() {
           try { qaAudio.pause(); } catch { /* ignore */ }
           qaAudio = null;
         }
-        if (!("speechSynthesis" in window) || !narration) {
+        if (!hasSpeechSynthesis || !narration) {
           window.setTimeout(() => finishQa({ resumeLessonAfter: true }), Math.ceil(qaDurationSeconds * 1000));
           return;
         }
@@ -1635,19 +3222,17 @@ function wireAvatarVideoPlayer() {
           manualIsPaused = false;
           manualPlayStart = 0;
           manualUtterance = null;
+          manualSpeechProgress = 0;
+          manualSpeechCharIndex = 0;
+          manualHasSpeechBoundary = false;
         }
 
-        try { window.speechSynthesis.cancel(); } catch { /* ignore */ }
-        qaUtterance = new SpeechSynthesisUtterance(narration);
-        qaUtterance.rate = getSpeed();
-        qaUtterance.onend = () => finishQa({ resumeLessonAfter: true });
-        qaUtterance.onerror = () => finishQa({ resumeLessonAfter: true });
-        window.speechSynthesis.speak(qaUtterance);
+        speakQaNarration(narration);
       });
       return;
     }
 
-    if (!("speechSynthesis" in window) || !narration) {
+    if (!hasSpeechSynthesis || !narration) {
       window.setTimeout(() => finishQa({ resumeLessonAfter: true }), Math.ceil(qaDurationSeconds * 1000));
       return;
     }
@@ -1659,14 +3244,12 @@ function wireAvatarVideoPlayer() {
       manualIsPaused = false;
       manualPlayStart = 0;
       manualUtterance = null;
+      manualSpeechProgress = 0;
+      manualSpeechCharIndex = 0;
+      manualHasSpeechBoundary = false;
     }
 
-    try { window.speechSynthesis.cancel(); } catch { /* ignore */ }
-    qaUtterance = new SpeechSynthesisUtterance(narration);
-    qaUtterance.rate = getSpeed();
-    qaUtterance.onend = () => finishQa({ resumeLessonAfter: true });
-    qaUtterance.onerror = () => finishQa({ resumeLessonAfter: true });
-    window.speechSynthesis.speak(qaUtterance);
+    speakQaNarration(narration);
   }
 
   async function submitQa() {
@@ -1797,13 +3380,22 @@ function wireAvatarVideoPlayer() {
     }
   }
 
-  if (avatarUrl) img.src = avatarUrl;
+  updateFullscreenButtonLabel();
+  ensureCanvasResolution(true);
   updateSpeedLabel();
 
   speed && speed.addEventListener("input", updateSpeedLabel);
+  canvas.addEventListener("wheel", handleBoardCanvasWheel, { passive: false });
+  canvas.addEventListener("pointerdown", handleBoardCanvasPointerDown);
+  canvas.addEventListener("pointermove", handleBoardCanvasPointerMove);
+  canvas.addEventListener("pointerup", handleBoardCanvasPointerUp);
+  canvas.addEventListener("pointercancel", handleBoardCanvasPointerUp);
+  canvas.addEventListener("lostpointercapture", clearScrollbarDrag);
+  canvas.addEventListener("keydown", handleBoardCanvasKeydown);
   playBtn && playBtn.addEventListener("click", play);
   stopBtn && stopBtn.addEventListener("click", stop);
   exportBtn && exportBtn.addEventListener("click", exportVideo);
+  fullscreenBtn && fullscreenBtn.addEventListener("click", toggleBoardFullscreen);
 
   askBtn && askBtn.addEventListener("click", openQa);
   understoodBtn && understoodBtn.addEventListener("click", () => finishQa({ resumeLessonAfter: true }));
@@ -1825,18 +3417,44 @@ function wireAvatarVideoPlayer() {
   qaOverlay && qaOverlay.addEventListener("click", (e) => {
     if (e.target === qaOverlay) closeQa({ resume: true });
   });
+  window.addEventListener("resize", () => ensureCanvasResolution(true));
+  document.addEventListener("fullscreenchange", () => {
+    updateFullscreenButtonLabel();
+    ensureCanvasResolution(true);
+  });
 
   if (audio) {
+    audio.addEventListener("loadedmetadata", () => {
+      renderBoardTimingPlan();
+    });
     audio.addEventListener("play", () => {
+      if (useBoundaryLessonNarration()) return;
+      if (hasSpeechSynthesis) {
+        try { window.speechSynthesis.cancel(); } catch { /* ignore */ }
+      }
+      manualIsPlaying = false;
+      manualIsPaused = false;
+      manualPlayStart = 0;
+      manualElapsedSeconds = 0;
+      manualUtterance = null;
+      manualSpeechProgress = 0;
+      manualSpeechCharIndex = 0;
+      manualHasSpeechBoundary = false;
       startLoop();
       ensureAnalyser().then(async () => {
         if (audioCtx && audioCtx.state === "suspended") await audioCtx.resume();
       }).catch(() => { /* ignore */ });
     });
-    audio.addEventListener("pause", stopLoop);
-    audio.addEventListener("ended", stopLoop);
+    audio.addEventListener("pause", () => {
+      if (useBoundaryLessonNarration()) return;
+      stopLoop();
+    });
+    audio.addEventListener("ended", () => {
+      if (useBoundaryLessonNarration()) return;
+      stopLoop();
+    });
   } else {
-    // No audio element (Stub mode): still render an idle avatar.
+    // No audio element (Stub mode): still render an idle scene.
     startLoop();
   }
 }

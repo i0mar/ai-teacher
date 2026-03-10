@@ -14,12 +14,13 @@
         <div class="actions">
             <a class="btn primary" asp-page="/Exams/Index">Take a practice exam</a>
             <a class="btn" asp-page="/Lessons/Index">Generate a lesson</a>
+            <a class="btn" asp-page="/Realtime/Index">Start live tutor</a>
         </div>
     </div>
     <div class="hero-card">
         <h2>Quick start</h2>
         <ol>
-            <li>Pick a lesson topic or generate a mini exam.</li>
+            <li>Pick a lesson topic, start a live tutor, or generate a mini exam.</li>
             <li>Submit answers and review results.</li>
             <li>Click “Explain” or “Make video” for guided solutions.</li>
         </ol>
@@ -36,6 +37,11 @@
         <a class="link" asp-page="/Lessons/Index">Explore lessons →</a>
     </div>
     <div class="card">
+        <h3>Live Tutor</h3>
+        <p>Talk to the tutor in real time while the whiteboard updates live.</p>
+        <a class="link" asp-page="/Realtime/Index">Open live tutor →</a>
+    </div>
+    <div class="card">
         <h3>Exams</h3>
         <p>Take original SAT-style practice questions and track correctness.</p>
         <a class="link" asp-page="/Exams/Index">Browse exams →</a>
@@ -46,4 +52,3 @@
         <a class="link" asp-page="/Videos/Index">View videos →</a>
     </div>
 </section>
-

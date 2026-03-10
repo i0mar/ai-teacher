@@ -13,4 +13,7 @@ public interface IAttemptStore
 
     bool TryGetBoardTimings(Guid attemptId, Guid questionId, out double[] boardTimings);
     void SetBoardTimings(Guid attemptId, Guid questionId, double[] boardTimings);
+
+    bool TryGetBoardTimestampSeconds(Guid attemptId, Guid questionId, out double[] boardTimestampSeconds);
+    void SetBoardTimestampSeconds(Guid attemptId, Guid questionId, double[] boardTimestampSeconds);
 }

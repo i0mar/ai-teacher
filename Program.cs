@@ -3,6 +3,8 @@ using AiTeacher.Services.Attempts;
 using AiTeacher.Services.Exams;
 using AiTeacher.Services.Storage;
 using AiTeacher.Services.Videos;
+using AiTeacher.Models;
+using System.Text;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -17,6 +19,10 @@ builder.Services.AddSingleton<IVideoJobRepository, JsonVideoJobRepository>();
 
 builder.Services.AddSingleton<StubAiChatClient>();
 builder.Services.AddHttpClient<OpenAiChatClient>();
+builder.Services.AddHttpClient<OpenAiRealtimeClient>(client =>
+{
+    client.Timeout = TimeSpan.FromMinutes(2);
+});
 builder.Services.AddSingleton<IAiChatClient>(sp =>
 {
     var options = sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<AiOptions>>().Value;
@@ -27,7 +33,10 @@ builder.Services.AddSingleton<IAiChatClient>(sp =>
 });
 
 builder.Services.AddSingleton<StubAiSpeechClient>();
-builder.Services.AddHttpClient<OpenAiSpeechClient>();
+builder.Services.AddHttpClient<OpenAiSpeechClient>(client =>
+{
+    client.Timeout = TimeSpan.FromMinutes(10);
+});
 builder.Services.AddSingleton<IAiSpeechClient>(sp =>
 {
     var options = sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<AiOptions>>().Value;
@@ -37,20 +46,9 @@ builder.Services.AddSingleton<IAiSpeechClient>(sp =>
         : sp.GetRequiredService<StubAiSpeechClient>();
 });
 
-builder.Services.AddSingleton<StubAiImageClient>();
-builder.Services.AddHttpClient<OpenAiImageClient>();
-builder.Services.AddSingleton<IAiImageClient>(sp =>
-{
-    var options = sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<AiOptions>>().Value;
-    var provider = options.Provider?.Trim() ?? "Stub";
-    return provider.Equals("OpenAI", StringComparison.OrdinalIgnoreCase)
-        ? sp.GetRequiredService<OpenAiImageClient>()
-        : sp.GetRequiredService<StubAiImageClient>();
-});
-
 builder.Services.AddSingleton<IAiTeacherService, AiTeacherService>();
 builder.Services.AddSingleton<IVideoNarrationService, VideoNarrationService>();
-builder.Services.AddSingleton<IAvatarService, AvatarService>();
+builder.Services.AddSingleton<RealtimeWhiteboardCoordinator>();
 
 var app = builder.Build();
 
@@ -97,12 +95,21 @@ app.MapPost("/api/attempts/{attemptId:guid}/questions/{questionId:guid}/explanat
         attempts.SetExplanation(attemptId, questionId, pack.Narration);
         attempts.SetBoardLines(attemptId, questionId, pack.BoardLines.ToArray());
         attempts.SetBoardTimings(attemptId, questionId, pack.BoardTimings.ToArray());
+        attempts.SetBoardTimestampSeconds(attemptId, questionId, pack.BoardTimestampSeconds?.ToArray() ?? Array.Empty<double>());
 
         return Results.Ok(new { explanation = pack.Narration });
     }).DisableAntiforgery();
 
 app.MapPost("/api/attempts/{attemptId:guid}/questions/{questionId:guid}/video",
-    async (Guid attemptId, Guid questionId, IAttemptStore attempts, IExamRepository exams, IAiTeacherService ai, IVideoJobRepository videos, IVideoNarrationService narration, IAvatarService avatars, CancellationToken ct) =>
+    async (
+        Guid attemptId,
+        Guid questionId,
+        IAttemptStore attempts,
+        IExamRepository exams,
+        IAiTeacherService ai,
+        IVideoJobRepository videos,
+        IVideoNarrationService narration,
+        CancellationToken ct) =>
     {
         if (!attempts.TryGetAttempt(attemptId, out var attempt))
             return Results.NotFound(new { message = "Attempt not found." });
@@ -116,8 +123,10 @@ app.MapPost("/api/attempts/{attemptId:guid}/questions/{questionId:guid}/video",
             return Results.NotFound(new { message = "Question not found." });
 
         string script;
+        List<string> narrationSegments;
         string[] boardLines;
         double[] boardTimings;
+        double[] boardTimestampSeconds;
 
         if (attempts.TryGetExplanation(attemptId, questionId, out var cachedExplanation)
             && attempts.TryGetBoardLines(attemptId, questionId, out var cachedBoardLines)
@@ -125,8 +134,12 @@ app.MapPost("/api/attempts/{attemptId:guid}/questions/{questionId:guid}/video",
             && cachedBoardLines.Length > 0)
         {
             script = cachedExplanation;
+            narrationSegments = new List<string>();
             boardLines = cachedBoardLines;
             boardTimings = cachedBoardTimings;
+            boardTimestampSeconds = attempts.TryGetBoardTimestampSeconds(attemptId, questionId, out var cachedBoardTimestampSeconds)
+                ? cachedBoardTimestampSeconds
+                : Array.Empty<double>();
         }
         else
         {
@@ -137,12 +150,15 @@ app.MapPost("/api/attempts/{attemptId:guid}/questions/{questionId:guid}/video",
                 studentChoiceIndex: attempt.Answers.ContainsKey(questionId) ? studentChoiceIndex : null,
                 ct);
             script = pack.Narration;
+            narrationSegments = pack.NarrationSegments ?? new List<string>();
             boardLines = pack.BoardLines.ToArray();
             boardTimings = pack.BoardTimings.ToArray();
+            boardTimestampSeconds = pack.BoardTimestampSeconds?.ToArray() ?? Array.Empty<double>();
 
             attempts.SetExplanation(attemptId, questionId, script);
             attempts.SetBoardLines(attemptId, questionId, boardLines);
             attempts.SetBoardTimings(attemptId, questionId, boardTimings);
+            attempts.SetBoardTimestampSeconds(attemptId, questionId, boardTimestampSeconds);
         }
 
         var job = new AiTeacher.Models.VideoJob
@@ -151,13 +167,27 @@ app.MapPost("/api/attempts/{attemptId:guid}/questions/{questionId:guid}/video",
             Title = $"Solution Video: {exam.Title} – Question {exam.Questions.FindIndex(q => q.Id == question.Id) + 1}",
             SourceType = "Solution",
             Script = script,
+            NarrationSegments = narrationSegments,
             BoardLines = boardLines.ToList(),
             BoardTimings = boardTimings.ToList(),
+            BoardTimestampSeconds = boardTimestampSeconds.ToList(),
             CreatedAtUtc = DateTimeOffset.UtcNow,
         };
 
-        job.AvatarUrl = await avatars.EnsureTeacherAvatarAsync(ct);
-        job.AudioUrl = await narration.TryGenerateAudioAsync(job.Id, job.Script, ct);
+        var narrationResult = await narration.TryGenerateAudioAsync(
+            job.Id,
+            job.Script,
+            job.NarrationSegments,
+            job.BoardLines,
+            job.BoardTimings,
+            job.BoardTimestampSeconds,
+            ct);
+        job.AudioUrl = narrationResult.AudioUrl;
+        if (narrationResult.BoardTimestampSeconds.Count == job.BoardLines.Count)
+            job.BoardTimestampSeconds = narrationResult.BoardTimestampSeconds.ToList();
+        if (narrationResult.NarrationSegments.Count == job.BoardLines.Count)
+            job.NarrationSegments = narrationResult.NarrationSegments.ToList();
+
         await videos.CreateAsync(job, ct);
         return Results.Ok(new { videoId = job.Id, watchUrl = $"/Videos/Watch/{job.Id}" });
     }).DisableAntiforgery();
@@ -216,8 +246,76 @@ app.MapPost("/api/videos/{videoId:guid}/question",
 
         var progress = req.Progress is { } p && double.IsFinite(p) ? Math.Clamp(p, 0, 1) : (double?)null;
         var pack = await aiTeacher.AnswerVideoQuestionAsync(video, question, progress, ct);
-        var audioUrl = await narration.TryGenerateAudioAsync(Guid.NewGuid(), pack.Narration, ct);
-        return Results.Ok(new { narration = pack.Narration, boardLines = pack.BoardLines, boardTimings = pack.BoardTimings, audioUrl });
+        var narrationResult = await narration.TryGenerateAudioAsync(
+            Guid.NewGuid(),
+            pack.Narration,
+            pack.NarrationSegments,
+            pack.BoardLines,
+            pack.BoardTimings,
+            pack.BoardTimestampSeconds ?? new List<double>(),
+            ct);
+        return Results.Ok(new
+        {
+            narration = pack.Narration,
+            narrationSegments = narrationResult.NarrationSegments.Count == pack.BoardLines.Count
+                ? narrationResult.NarrationSegments
+                : pack.NarrationSegments,
+            boardLines = pack.BoardLines,
+            boardTimings = pack.BoardTimings,
+            boardTimestampSeconds = narrationResult.BoardTimestampSeconds.Count == pack.BoardLines.Count
+                ? narrationResult.BoardTimestampSeconds
+                : pack.BoardTimestampSeconds,
+            audioUrl = narrationResult.AudioUrl
+        });
+    }).DisableAntiforgery();
+
+app.MapPost("/api/realtime-lessons/connect",
+    async (HttpRequest httpRequest, string? topic, OpenAiRealtimeClient realtime, CancellationToken ct) =>
+    {
+        var cleanTopic = (topic ?? "").Trim();
+        if (string.IsNullOrWhiteSpace(cleanTopic))
+            return Results.BadRequest(new { message = "Enter a lesson topic before starting live mode." });
+
+        string offerSdp;
+        using (var reader = new StreamReader(httpRequest.Body, Encoding.UTF8, detectEncodingFromByteOrderMarks: false, leaveOpen: true))
+        {
+            offerSdp = await reader.ReadToEndAsync(ct);
+        }
+
+        if (string.IsNullOrWhiteSpace(offerSdp))
+            return Results.BadRequest(new { message = "Missing WebRTC offer SDP." });
+
+        try
+        {
+            var answerSdp = await realtime.CreateLessonCallAnswerSdpAsync(offerSdp, cleanTopic, ct);
+            return Results.Text(answerSdp, "application/sdp");
+        }
+        catch (InvalidOperationException ex)
+        {
+            return Results.BadRequest(new { message = ex.Message });
+        }
+    }).DisableAntiforgery();
+
+app.MapPost("/api/realtime-lessons/board-sync",
+    async (RealtimeBoardSyncRequest request, RealtimeWhiteboardCoordinator coordinator, CancellationToken ct) =>
+    {
+        var topic = (request.Topic ?? "").Trim();
+        if (string.IsNullOrWhiteSpace(topic))
+            return Results.BadRequest(new { message = "Missing lesson topic." });
+
+        var spokenChunk = (request.AssistantTranscriptChunk ?? "").Trim();
+        if (string.IsNullOrWhiteSpace(spokenChunk))
+            return Results.Ok(new RealtimeBoardSyncResponse(Array.Empty<string>()));
+
+        try
+        {
+            var lines = await coordinator.BuildBoardUpdatesAsync(request, ct);
+            return Results.Ok(new RealtimeBoardSyncResponse(lines.ToArray()));
+        }
+        catch (InvalidOperationException ex)
+        {
+            return Results.BadRequest(new { message = ex.Message });
+        }
     }).DisableAntiforgery();
 
 app.Run();

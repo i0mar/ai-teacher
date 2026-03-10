@@ -1,5 +1,6 @@
 @page
 @model AiTeacher.Pages.Lessons.IndexModel
+@using AiTeacher.Services.Ai
 @{
     ViewData["Title"] = "Lessons";
 }
@@ -12,6 +13,18 @@
         <form method="post" class="card form" data-loading="lesson">
             <label class="label" for="topic">Lesson topic</label>
             <input id="topic" name="Topic" class="input" value="@Model.Topic" placeholder="e.g., Linear equations, grammar transitions, inference questions…" />
+
+            <label class="label">Lesson length</label>
+            <div class="choices">
+                <label class="choice" for="length-short">
+                    <input id="length-short" type="radio" name="Length" value="@LessonLength.Short" @(Model.Length == LessonLength.Short ? "checked" : "") />
+                    <span>Short lesson (under 5 minutes)</span>
+                </label>
+                <label class="choice" for="length-long">
+                    <input id="length-long" type="radio" name="Length" value="@LessonLength.Long" @(Model.Length != LessonLength.Short ? "checked" : "") />
+                    <span>Long lesson</span>
+                </label>
+            </div>
 
             <button class="btn primary" type="submit">Generate lesson</button>
             <p class="muted small">
@@ -26,8 +39,9 @@
             @foreach (var t in Model.SuggestedTopics)
             {
                 <li>
-                    <form method="post" class="topic-pill" data-loading="lesson">
+                    <form method="post" class="topic-pill" data-loading="lesson" onsubmit="return syncLessonLength(this);">
                         <input type="hidden" name="Topic" value="@t" />
+                        <input type="hidden" name="Length" value="@Model.Length" />
                         <button type="submit" class="pill">@t</button>
                     </form>
                 </li>
@@ -49,3 +63,21 @@
         </div>
     </div>
 </div>
+
+@section Scripts {
+    <script>
+        function syncLessonLength(form) {
+            const selected = document.querySelector('input[name="Length"]:checked');
+            if (!selected) {
+                return true;
+            }
+
+            const hiddenLength = form.querySelector('input[name="Length"]');
+            if (hiddenLength) {
+                hiddenLength.value = selected.value;
+            }
+
+            return true;
+        }
+    </script>
+}

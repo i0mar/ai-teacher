@@ -19,14 +19,13 @@
     <pre><code>Ai__Provider=OpenAI
 Ai__OpenAi__ApiKey=YOUR_KEY
 Ai__OpenAi__Model=gpt-5.2
-Ai__OpenAi__ImageModel=gpt-image-1
 Ai__OpenAi__TtsModel=tts-1
 Ai__OpenAi__TtsVoice=alloy</code></pre>
 
     <h2>“Video” generation</h2>
     <p>
-        Videos are implemented as “video jobs” built from scripts. If OpenAI is enabled, the app generates a photorealistic (fictional) teacher portrait
-        (OpenAI Images) and narration audio (OpenAI TTS), then plays it next to a whiteboard that writes the solution steps while the teacher explains.
+        Videos are implemented as “video jobs” built from scripts. If OpenAI is enabled, the app generates narration audio (OpenAI TTS)
+        and synchronizes the whiteboard writing to that narration.
         You can click “Save video” to export a real WebM file.
     </p>
 </div>

@@ -82,6 +82,26 @@ public sealed class InMemoryAttemptStore : IAttemptStore
         attempt.BoardTimings[questionId] = boardTimings;
     }
 
+    public bool TryGetBoardTimestampSeconds(Guid attemptId, Guid questionId, out double[] boardTimestampSeconds)
+    {
+        boardTimestampSeconds = Array.Empty<double>();
+        if (!_attempts.TryGetValue(attemptId, out var attempt))
+            return false;
+
+        return attempt.BoardTimestampSeconds.TryGetValue(questionId, out boardTimestampSeconds!);
+    }
+
+    public void SetBoardTimestampSeconds(Guid attemptId, Guid questionId, double[] boardTimestampSeconds)
+    {
+        if (boardTimestampSeconds is null || boardTimestampSeconds.Length == 0)
+            return;
+
+        if (!_attempts.TryGetValue(attemptId, out var attempt))
+            return;
+
+        attempt.BoardTimestampSeconds[questionId] = boardTimestampSeconds;
+    }
+
     private void Cleanup()
     {
         var cutoff = DateTimeOffset.UtcNow - AttemptTtl;

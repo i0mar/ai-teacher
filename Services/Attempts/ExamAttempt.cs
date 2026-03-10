@@ -11,4 +11,5 @@ public sealed class ExamAttempt
     public ConcurrentDictionary<Guid, string> Explanations { get; } = new();
     public ConcurrentDictionary<Guid, string[]> BoardLines { get; } = new();
     public ConcurrentDictionary<Guid, double[]> BoardTimings { get; } = new();
+    public ConcurrentDictionary<Guid, double[]> BoardTimestampSeconds { get; } = new();
 }

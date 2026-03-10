@@ -11,18 +11,22 @@ public class IndexModel : PageModel
     private readonly IAiTeacherService _aiTeacher;
     private readonly IVideoJobRepository _videos;
     private readonly IVideoNarrationService _narration;
-    private readonly IAvatarService _avatars;
 
-    public IndexModel(IAiTeacherService aiTeacher, IVideoJobRepository videos, IVideoNarrationService narration, IAvatarService avatars)
+    public IndexModel(
+        IAiTeacherService aiTeacher,
+        IVideoJobRepository videos,
+        IVideoNarrationService narration)
     {
         _aiTeacher = aiTeacher;
         _videos = videos;
         _narration = narration;
-        _avatars = avatars;
     }
 
     [BindProperty]
     public string Topic { get; set; } = "";
+
+    [BindProperty]
+    public LessonLength Length { get; set; } = LessonLength.Long;
 
     public IReadOnlyList<string> SuggestedTopics { get; } =
     [
@@ -48,20 +52,39 @@ public class IndexModel : PageModel
             return Page();
         }
 
-        var pack = await _aiTeacher.GenerateLessonVideoAsync(Topic.Trim(), ct);
+        if (!Enum.IsDefined(Length))
+            Length = LessonLength.Long;
+
+        var pack = await _aiTeacher.GenerateLessonVideoAsync(Topic.Trim(), Length, ct);
         var job = new VideoJob
         {
             Id = Guid.NewGuid(),
-            Title = $"Lesson: {Topic.Trim()}",
+            Title = Length == LessonLength.Short
+                ? $"Lesson (Short): {Topic.Trim()}"
+                : $"Lesson: {Topic.Trim()}",
             SourceType = "Lesson",
             Script = pack.Narration,
+            NarrationSegments = pack.NarrationSegments ?? new List<string>(),
             BoardLines = pack.BoardLines,
             BoardTimings = pack.BoardTimings,
+            BoardTimestampSeconds = pack.BoardTimestampSeconds ?? new List<double>(),
             CreatedAtUtc = DateTimeOffset.UtcNow
         };
 
-        job.AvatarUrl = await _avatars.EnsureTeacherAvatarAsync(ct);
-        job.AudioUrl = await _narration.TryGenerateAudioAsync(job.Id, job.Script, ct);
+        var narrationResult = await _narration.TryGenerateAudioAsync(
+            job.Id,
+            job.Script,
+            job.NarrationSegments,
+            job.BoardLines,
+            job.BoardTimings,
+            job.BoardTimestampSeconds,
+            ct);
+        job.AudioUrl = narrationResult.AudioUrl;
+        if (narrationResult.BoardTimestampSeconds.Count == job.BoardLines.Count)
+            job.BoardTimestampSeconds = narrationResult.BoardTimestampSeconds.ToList();
+        if (narrationResult.NarrationSegments.Count == job.BoardLines.Count)
+            job.NarrationSegments = narrationResult.NarrationSegments.ToList();
+
         await _videos.CreateAsync(job, ct);
         return RedirectToPage("/Videos/Watch", new { id = job.Id });
     }
