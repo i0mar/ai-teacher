@@ -11,8 +11,24 @@ public sealed class VideoNarrationService : IVideoNarrationService
     private const int MaxChunkChars = 2200;
     private const int MinRetryChunkChars = 500;
     private const double MinChunkFillRatio = 0.6;
+    private const double SegmentMaxWordMultiplier = 2.35;
+    private const double BoundarySegmentMaxWordMultiplier = 2.05;
+    private const double SegmentMaxCharMultiplier = 2.7;
+    private const double BoundarySegmentMaxCharMultiplier = 2.25;
     private const string AfconvertPath = "/usr/bin/afconvert";
     private static readonly Regex WordRegex = new(@"[A-Za-z0-9]+(?:['’][A-Za-z0-9]+)?", RegexOptions.Compiled);
+    private static readonly Regex DrawNarrationRegex = new(@"\b(draw|drawing|triangle|graph|axes|bar|circle|focus|diagram|picture|plot)\b", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+    private static readonly HashSet<string> SyncStopWords = new(StringComparer.Ordinal)
+    {
+        "the", "and", "then", "this", "that", "with", "from", "into", "your", "you", "our", "for", "are",
+        "was", "were", "have", "has", "had", "let", "lets", "write", "draw", "step", "line", "now", "onto",
+        "over", "about", "what", "when", "where", "why", "how", "all", "any", "can", "just", "than", "them",
+        "to", "of", "in", "on", "at", "by", "be", "as", "is", "it", "we", "us"
+    };
+    private static readonly HashSet<string> SyncSingleLetterKeywords = new(StringComparer.Ordinal)
+    {
+        "x", "y", "a", "b", "c", "m", "n"
+    };
 
     private readonly IWebHostEnvironment _env;
     private readonly IAiSpeechClient _speech;
@@ -58,12 +74,26 @@ public sealed class VideoNarrationService : IVideoNarrationService
 
             var resolvedSegments = safeBoardLines.Count == 0
                 ? new List<string> { narrationText }
-                : safeNarrationSegments.Count == safeBoardLines.Count
-                    ? safeNarrationSegments
-                    : await BuildNarrationSegmentsAsync(narrationText, safeBoardLines, safeBoardTimings, ct);
+                : await ResolveNarrationSegmentsAsync(
+                    narrationText,
+                    safeNarrationSegments,
+                    safeBoardLines,
+                    safeBoardTimings,
+                    ct);
 
             if (resolvedSegments.Count == 0)
                 resolvedSegments = new List<string> { narrationText };
+
+            var singlePassResult = await TryGenerateSinglePassAudioAsync(
+                videoId,
+                narrationText,
+                resolvedSegments,
+                safeBoardLines,
+                safeBoardTimings,
+                fallbackTimestampSeconds,
+                ct);
+            if (singlePassResult is not null)
+                return singlePassResult;
 
             var synthesizedSegments = new List<SynthesizedSegment>(resolvedSegments.Count);
             for (var i = 0; i < resolvedSegments.Count; i++)
@@ -90,23 +120,18 @@ public sealed class VideoNarrationService : IVideoNarrationService
             if (wav.Length == 0)
                 return new VideoNarrationResult(null, fallbackTimestampSeconds, safeNarrationSegments);
 
-            var webRoot = _env.WebRootPath;
-            if (string.IsNullOrWhiteSpace(webRoot))
-                webRoot = Path.Combine(_env.ContentRootPath, "wwwroot");
+            var relativeUrl = await WriteNarrationAudioAsync(videoId, wav, ct);
 
-            var relativeUrl = $"/generated/audio/{videoId}.wav";
-            var filePath = Path.Combine(webRoot, "generated", "audio", $"{videoId}.wav");
+            var segmentsCoverBoard = safeBoardLines.Count == resolvedSegments.Count;
+            var segmentsAlignToBoard = segmentsCoverBoard &&
+                SegmentsAlignToBoardLines(resolvedSegments, safeBoardLines);
+            var canUseRecoveredSegmentTiming = segmentsCoverBoard && segmentsAlignToBoard;
+            var durationSeconds = GetTotalDurationSeconds(synthesizedSegments);
+            var alignedTimestampSeconds = canUseRecoveredSegmentTiming
+                ? BuildExactTimestampSeconds(synthesizedSegments)
+                : ScaleFractionsToSeconds(safeBoardTimings, safeBoardLines.Count, durationSeconds);
 
-            Directory.CreateDirectory(Path.GetDirectoryName(filePath)!);
-            await File.WriteAllBytesAsync(filePath, wav, ct);
-
-            var alignedTimestampSeconds = ResolveBoardTimestampSeconds(
-                synthesizedSegments,
-                safeBoardTimings,
-                fallbackTimestampSeconds,
-                safeBoardLines.Count);
-
-            var returnedSegments = safeBoardLines.Count == resolvedSegments.Count
+            var returnedSegments = canUseRecoveredSegmentTiming
                 ? resolvedSegments
                 : new List<string>();
 
@@ -119,6 +144,73 @@ public sealed class VideoNarrationService : IVideoNarrationService
         }
     }
 
+    private async Task<VideoNarrationResult?> TryGenerateSinglePassAudioAsync(
+        Guid videoId,
+        string narration,
+        IReadOnlyList<string> resolvedSegments,
+        IReadOnlyList<string> boardLines,
+        IReadOnlyList<double> boardTimings,
+        IReadOnlyList<double> fallbackTimestampSeconds,
+        CancellationToken ct)
+    {
+        if (boardLines.Count == 0 ||
+            resolvedSegments.Count != boardLines.Count ||
+            !SegmentsAlignToBoardLines(resolvedSegments, boardLines))
+        {
+            return null;
+        }
+
+        var wavBytes = await SynthesizeSegmentAsync(narration, ct);
+        if (wavBytes.Length == 0 || !TryReadWavInfo(wavBytes, out _))
+            return null;
+
+        var wordTimings = await _speech.TryTranscribeWordTimingsAsync(wavBytes, narration, ct);
+        var exactTimestampSeconds = BuildTimestampSecondsFromWordTimings(resolvedSegments, wordTimings);
+        if (exactTimestampSeconds.Count != boardLines.Count)
+            return null;
+
+        var relativeUrl = await WriteNarrationAudioAsync(videoId, wavBytes, ct);
+        return new VideoNarrationResult(relativeUrl, exactTimestampSeconds, resolvedSegments.ToList());
+    }
+
+    private async Task<List<string>> ResolveNarrationSegmentsAsync(
+        string narration,
+        IReadOnlyList<string> providedSegments,
+        IReadOnlyList<string> boardLines,
+        IReadOnlyList<double> boardTimings,
+        CancellationToken ct)
+    {
+        if (boardLines.Count == 0 || string.IsNullOrWhiteSpace(narration))
+            return new List<string>();
+
+        var providedSegmentsAreReliable = SegmentsAreReliable(providedSegments, narration, boardLines.Count);
+        var providedSegmentsAlign = SegmentsAlignToBoardLines(providedSegments, boardLines);
+        if (providedSegmentsAreReliable && providedSegmentsAlign)
+            return providedSegments.Select(segment => segment.Trim()).ToList();
+
+        if (providedSegments.Count == boardLines.Count && SegmentsCoverNarration(providedSegments, narration, boardLines.Count))
+        {
+            if (!providedSegmentsAreReliable)
+            {
+                _logger.LogInformation(
+                    "Rebuilding narration segments for {BoardLineCount} board lines because the provided spoken beats are too imbalanced for sync.",
+                    boardLines.Count);
+            }
+            else if (!providedSegmentsAlign)
+            {
+                _logger.LogInformation(
+                    "Rebuilding narration segments for {BoardLineCount} board lines because the provided spoken beats drift from the board lines.",
+                    boardLines.Count);
+            }
+        }
+
+        var rebuiltSegments = await BuildNarrationSegmentsAsync(narration, boardLines, boardTimings, ct);
+        if (rebuiltSegments.Count == boardLines.Count)
+            return rebuiltSegments;
+
+        return new List<string>();
+    }
+
     private async Task<List<string>> BuildNarrationSegmentsAsync(
         string narration,
         IReadOnlyList<string> boardLines,
@@ -129,13 +221,23 @@ public sealed class VideoNarrationService : IVideoNarrationService
             return new List<string>();
 
         var modelSegments = await TrySegmentWithModelAsync(narration, boardLines, boardTimings, ct);
-        if (SegmentsCoverNarration(modelSegments, narration, boardLines.Count))
+        if (SegmentsAreReliable(modelSegments, narration, boardLines.Count) &&
+            SegmentsAlignToBoardLines(modelSegments, boardLines))
             return modelSegments;
 
         var heuristicSegments = HeuristicSegmentNarration(narration, boardLines.Count, boardTimings);
-        return SegmentsCoverNarration(heuristicSegments, narration, boardLines.Count)
-            ? heuristicSegments
-            : new List<string>();
+        if (SegmentsAreReliable(heuristicSegments, narration, boardLines.Count) &&
+            SegmentsAlignToBoardLines(heuristicSegments, boardLines))
+            return heuristicSegments;
+
+        var fallbackSegments = SplitEvenlyByWords(narration, boardLines.Count);
+        if (SegmentsCoverNarration(fallbackSegments, narration, boardLines.Count) &&
+            SegmentsAlignToBoardLines(fallbackSegments, boardLines))
+        {
+            return fallbackSegments;
+        }
+
+        return new List<string>();
     }
 
     private async Task<List<string>> TrySegmentWithModelAsync(
@@ -149,6 +251,10 @@ public sealed class VideoNarrationService : IVideoNarrationService
             const string systemPrompt =
                 "You partition lesson narration into contiguous spoken segments for audio production. " +
                 "Do not rewrite, add, remove, or paraphrase words. Return JSON only.";
+
+            var totalWords = Math.Max(1, TokenizeWords(narration).Count);
+            var targetWordsPerSegment = Math.Max(10, (int)Math.Round(totalWords / (double)Math.Max(1, boardLines.Count)));
+            var maxWordsPerSegment = Math.Max(28, (int)Math.Ceiling(targetWordsPerSegment * 1.9));
 
             var lines = boardLines
                 .Select((line, index) =>
@@ -165,7 +271,10 @@ public sealed class VideoNarrationService : IVideoNarrationService
                 "- Each segment must be copied from the narration in order.\n" +
                 "- Together the segments must cover the full narration exactly once.\n" +
                 "- Segment i must align semantically to board line i.\n" +
+                "- Each segment should cover only the words spoken while board line i is being written.\n" +
                 "- Prefer natural clause or sentence boundaries when possible.\n" +
+                $"- Aim for about {targetWordsPerSegment} words per segment when possible; avoid segments above about {maxWordsPerSegment} words unless the exact narration forces it.\n" +
+                "- Do not lump a whole example, intro, or outro into one segment across multiple board lines.\n" +
                 "- Return valid JSON in the shape {\"segments\":[\"...\"]}.\n\n" +
                 "Board lines:\n" +
                 string.Join('\n', lines) +
@@ -206,6 +315,177 @@ public sealed class VideoNarrationService : IVideoNarrationService
         {
             return new List<string>();
         }
+    }
+
+    private static bool SegmentsAreReliable(IReadOnlyList<string> segments, string narration, int expectedCount)
+    {
+        if (!SegmentsCoverNarration(segments, narration, expectedCount))
+            return false;
+
+        if (segments.Count <= 1)
+            return true;
+
+        var wordCounts = segments
+            .Select(segment => TokenizeWords(segment).Count)
+            .ToList();
+        if (wordCounts.Any(count => count <= 0))
+            return false;
+
+        var charCounts = segments
+            .Select(segment => (segment ?? "").Trim().Length)
+            .ToList();
+
+        var avgWords = wordCounts.Average();
+        var avgChars = charCounts.Average();
+        var medianWords = Median(wordCounts);
+
+        var maxWordsPerSegment = Math.Max(38.0, Math.Max(avgWords * SegmentMaxWordMultiplier, medianWords * 2.5));
+        var boundaryMaxWords = Math.Max(46.0, Math.Max(avgWords * BoundarySegmentMaxWordMultiplier, medianWords * 2.2));
+        var maxCharsPerSegment = Math.Max(240.0, avgChars * SegmentMaxCharMultiplier);
+        var boundaryMaxChars = Math.Max(300.0, avgChars * BoundarySegmentMaxCharMultiplier);
+        var allowedOversizedSegments = Math.Max(1, expectedCount / 10);
+        var oversizedSegments = 0;
+
+        for (var i = 0; i < segments.Count; i++)
+        {
+            var wordCount = wordCounts[i];
+            var charCount = charCounts[i];
+
+            var isOversized =
+                wordCount > maxWordsPerSegment ||
+                charCount > maxCharsPerSegment;
+            if (isOversized)
+                oversizedSegments++;
+
+            if ((i == 0 || i == segments.Count - 1) &&
+                (wordCount > boundaryMaxWords ||
+                 charCount > boundaryMaxChars))
+            {
+                return false;
+            }
+        }
+
+        return oversizedSegments <= allowedOversizedSegments;
+    }
+
+    private static bool SegmentsAlignToBoardLines(IReadOnlyList<string> segments, IReadOnlyList<string> boardLines)
+    {
+        if (segments.Count == 0 || segments.Count != boardLines.Count)
+            return false;
+
+        var aligned = 0;
+        var introAligned = 0;
+        var introWindow = Math.Min(10, boardLines.Count);
+        for (var i = 0; i < boardLines.Count; i++)
+        {
+            if (!BoardLineMatchesNarrationSegment(boardLines[i], segments[i]))
+                continue;
+
+            aligned++;
+            if (i < introWindow)
+                introAligned++;
+        }
+
+        if (introWindow <= 0)
+            return false;
+
+        var alignedRatio = aligned / (double)boardLines.Count;
+        var introRatio = introAligned / (double)introWindow;
+        return alignedRatio >= 0.72 && introRatio >= 0.6;
+    }
+
+    private static int CountAlignedBoardLines(IReadOnlyList<string> segments, IReadOnlyList<string> boardLines)
+    {
+        if (segments.Count == 0 || segments.Count != boardLines.Count)
+            return 0;
+
+        var aligned = 0;
+        for (var i = 0; i < boardLines.Count; i++)
+        {
+            if (BoardLineMatchesNarrationSegment(boardLines[i], segments[i]))
+                aligned++;
+        }
+
+        return aligned;
+    }
+
+    private static bool BoardLineMatchesNarrationSegment(string line, string segment)
+    {
+        var boardLine = (line ?? "").Trim();
+        var narration = (segment ?? "").Trim();
+        if (boardLine.Length == 0 || narration.Length == 0)
+            return false;
+
+        var lineKeywords = ExtractSyncKeywords(boardLine);
+        if (lineKeywords.Count == 0)
+            return false;
+
+        var narrationKeywords = ExtractSyncKeywords(narration);
+        var narrationKeywordSet = new HashSet<string>(narrationKeywords, StringComparer.Ordinal);
+        var overlap = lineKeywords.Count(keyword => narrationKeywordSet.Contains(keyword));
+
+        if (boardLine.StartsWith("DRAW", StringComparison.OrdinalIgnoreCase))
+        {
+            var focusMatchers = new List<string[]>();
+            if (boardLine.Contains("focus", StringComparison.OrdinalIgnoreCase))
+            {
+                if (boardLine.Contains("theta", StringComparison.OrdinalIgnoreCase) || boardLine.Contains("θ", StringComparison.Ordinal))
+                    focusMatchers.Add(new[] { "theta", "θ", "angle" });
+                if (boardLine.Contains("right angle", StringComparison.OrdinalIgnoreCase))
+                    focusMatchers.Add(new[] { "right angle", "90", "90-degree", "ninety-degree" });
+                if (Regex.IsMatch(boardLine, @"\bhyp(?:otenuse)?\b", RegexOptions.IgnoreCase))
+                    focusMatchers.Add(new[] { "hyp", "hypotenuse", "longest side" });
+                if (Regex.IsMatch(boardLine, @"\bopp(?:osite)?\b", RegexOptions.IgnoreCase))
+                    focusMatchers.Add(new[] { "opp", "opposite" });
+                if (Regex.IsMatch(boardLine, @"\badj(?:acent)?\b", RegexOptions.IgnoreCase))
+                    focusMatchers.Add(new[] { "adj", "adjacent" });
+            }
+
+            if (focusMatchers.Count > 0)
+                return focusMatchers.Any(group => group.Any(token => narration.Contains(token, StringComparison.OrdinalIgnoreCase)));
+
+            return overlap >= 1 || DrawNarrationRegex.IsMatch(narration);
+        }
+
+        var requiredOverlap = lineKeywords.Count >= 4 ? 2 : 1;
+        return overlap >= requiredOverlap;
+    }
+
+    private static List<string> ExtractSyncKeywords(string text)
+    {
+        var tokens = TokenizeWords(text);
+        if (tokens.Count == 0)
+            return new List<string>();
+
+        var keywords = new List<string>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var token in tokens)
+        {
+            var normalized = NormalizeSyncWord(token);
+            var isNumber = normalized.Any(char.IsDigit);
+            if (!isNumber && normalized.Length <= 1 && !SyncSingleLetterKeywords.Contains(normalized))
+                continue;
+            if (SyncStopWords.Contains(normalized) || !seen.Add(normalized))
+                continue;
+
+            keywords.Add(normalized);
+            if (keywords.Count >= 8)
+                break;
+        }
+
+        return keywords;
+    }
+
+    private static double Median(IReadOnlyList<int> values)
+    {
+        if (values.Count == 0)
+            return 0;
+
+        var ordered = values.OrderBy(v => v).ToArray();
+        var mid = ordered.Length / 2;
+        return ordered.Length % 2 == 0
+            ? (ordered[mid - 1] + ordered[mid]) / 2.0
+            : ordered[mid];
     }
 
     private static bool SegmentsCoverNarration(IReadOnlyList<string> segments, string narration, int expectedCount)
@@ -298,21 +578,49 @@ public sealed class VideoNarrationService : IVideoNarrationService
         if (segmentCount <= 0)
             return new List<string>();
 
-        var words = Regex.Split(narration.Trim(), @"\s+")
-            .Where(w => !string.IsNullOrWhiteSpace(w))
+        var text = narration.Trim();
+        if (text.Length == 0)
+            return new List<string>();
+
+        var words = WordRegex.Matches(text)
+            .Cast<Match>()
             .ToList();
         if (words.Count == 0)
             return new List<string>();
 
-        var chunks = new List<string>(segmentCount);
+        if (segmentCount == 1)
+            return new List<string> { text };
+
+        var boundaries = new List<int>(segmentCount + 1) { 0 };
         var cursor = 0;
-        for (var i = 0; i < segmentCount; i++)
+        for (var i = 0; i < segmentCount - 1; i++)
         {
             var remainingSegments = segmentCount - i;
             var remainingWords = words.Count - cursor;
             var take = (int)Math.Ceiling(remainingWords / (double)remainingSegments);
-            chunks.Add(string.Join(' ', words.Skip(cursor).Take(take)));
-            cursor += take;
+            cursor = Math.Min(words.Count - 1, cursor + take);
+
+            var nextWordIndex = words[cursor].Index;
+            var boundary = FindBoundaryNear(text, nextWordIndex);
+            if (boundary <= boundaries[^1])
+                boundary = nextWordIndex;
+            boundaries.Add(boundary);
+        }
+        boundaries.Add(text.Length);
+
+        var chunks = new List<string>(segmentCount);
+        for (var i = 0; i < segmentCount; i++)
+        {
+            var start = boundaries[i];
+            var end = boundaries[i + 1];
+            if (end <= start)
+                end = Math.Min(text.Length, Math.Max(start + 1, start + (text.Length / Math.Max(1, segmentCount))));
+
+            var chunk = text[start..Math.Min(text.Length, end)].Trim();
+            if (chunk.Length == 0)
+                return new List<string>();
+
+            chunks.Add(chunk);
         }
 
         return chunks;
@@ -491,6 +799,133 @@ public sealed class VideoNarrationService : IVideoNarrationService
         return ScaleFractionsToSeconds(boardTimings, expectedCount, durationSeconds);
     }
 
+    private static List<double> BuildTimestampSecondsFromWordTimings(
+        IReadOnlyList<string> segments,
+        IReadOnlyList<AiSpeechWordTiming> wordTimings)
+    {
+        if (segments.Count == 0 || wordTimings.Count == 0)
+            return new List<double>();
+
+        var segmentTokens = segments
+            .Select(TokenizeWords)
+            .ToList();
+        if (segmentTokens.Any(tokens => tokens.Count == 0))
+            return new List<double>();
+
+        var timedWords = wordTimings
+            .Select(word => new TimedNarrationWord(NormalizeWord(word.Word), Math.Max(0.0, word.StartSeconds)))
+            .Where(word => word.Token.Length > 0)
+            .ToList();
+        if (timedWords.Count == 0)
+            return new List<double>();
+
+        var totalSegmentWords = segmentTokens.Sum(tokens => tokens.Count);
+        if (totalSegmentWords <= 0)
+            return new List<double>();
+
+        var timestamps = new List<double>(segments.Count);
+        var consumedSourceWords = 0;
+        var previousAudioIndex = 0;
+        var previousSeconds = -0.05;
+
+        for (var i = 0; i < segmentTokens.Count; i++)
+        {
+            double seconds;
+            if (i == 0)
+            {
+                seconds = timedWords[0].StartSeconds;
+            }
+            else
+            {
+                var expectedAudioIndex = EstimateAudioWordIndex(
+                    consumedSourceWords,
+                    totalSegmentWords,
+                    timedWords.Count,
+                    previousAudioIndex + 1);
+                var matchIndex = FindSegmentStartWordIndex(
+                    segmentTokens[i],
+                    timedWords,
+                    previousAudioIndex + 1,
+                    expectedAudioIndex);
+                if (matchIndex < 0)
+                    matchIndex = expectedAudioIndex;
+
+                matchIndex = Math.Clamp(matchIndex, 0, timedWords.Count - 1);
+                previousAudioIndex = matchIndex;
+                seconds = timedWords[matchIndex].StartSeconds;
+            }
+
+            seconds = Math.Max(previousSeconds + 0.05, Math.Max(0.0, seconds));
+            timestamps.Add(seconds);
+            previousSeconds = seconds;
+            consumedSourceWords += segmentTokens[i].Count;
+        }
+
+        return timestamps;
+    }
+
+    private static int EstimateAudioWordIndex(int consumedSourceWords, int totalSourceWords, int audioWordCount, int minIndex)
+    {
+        if (audioWordCount <= 0)
+            return 0;
+
+        if (totalSourceWords <= 0)
+            return Math.Clamp(minIndex, 0, audioWordCount - 1);
+
+        var progress = Math.Clamp(consumedSourceWords / (double)totalSourceWords, 0.0, 1.0);
+        var estimate = (int)Math.Round(progress * Math.Max(0, audioWordCount - 1));
+        return Math.Clamp(Math.Max(minIndex, estimate), 0, audioWordCount - 1);
+    }
+
+    private static int FindSegmentStartWordIndex(
+        IReadOnlyList<string> segmentTokens,
+        IReadOnlyList<TimedNarrationWord> timedWords,
+        int minIndex,
+        int expectedIndex)
+    {
+        if (segmentTokens.Count == 0 || timedWords.Count == 0 || minIndex >= timedWords.Count)
+            return -1;
+
+        var safeMinIndex = Math.Max(0, minIndex);
+        var safeExpectedIndex = Math.Clamp(expectedIndex, safeMinIndex, timedWords.Count - 1);
+        var anchorLengths = new[] { 6, 5, 4, 3, 2, 1 };
+        var windows = new[] { 18, 48, 120, int.MaxValue };
+
+        foreach (var window in windows)
+        {
+            var searchStart = window == int.MaxValue
+                ? safeMinIndex
+                : Math.Max(safeMinIndex, safeExpectedIndex - window);
+            var searchEnd = window == int.MaxValue
+                ? timedWords.Count - 1
+                : Math.Min(timedWords.Count - 1, safeExpectedIndex + window);
+
+            foreach (var anchorLength in anchorLengths)
+            {
+                if (segmentTokens.Count < anchorLength || anchorLength <= 0)
+                    continue;
+
+                for (var i = searchStart; i <= searchEnd - anchorLength + 1; i++)
+                {
+                    var matches = true;
+                    for (var j = 0; j < anchorLength; j++)
+                    {
+                        if (!string.Equals(timedWords[i + j].Token, segmentTokens[j], StringComparison.Ordinal))
+                        {
+                            matches = false;
+                            break;
+                        }
+                    }
+
+                    if (matches)
+                        return i;
+                }
+            }
+        }
+
+        return -1;
+    }
+
     private static List<double> BuildExactTimestampSeconds(IReadOnlyList<SynthesizedSegment> segments)
     {
         var result = new List<double>(segments.Count);
@@ -525,6 +960,19 @@ public sealed class VideoNarrationService : IVideoNarrationService
         return cleaned;
     }
 
+    private async Task<string> WriteNarrationAudioAsync(Guid videoId, byte[] wavBytes, CancellationToken ct)
+    {
+        var webRoot = _env.WebRootPath;
+        if (string.IsNullOrWhiteSpace(webRoot))
+            webRoot = Path.Combine(_env.ContentRootPath, "wwwroot");
+
+        var relativeUrl = $"/generated/audio/{videoId}.wav";
+        var filePath = Path.Combine(webRoot, "generated", "audio", $"{videoId}.wav");
+        Directory.CreateDirectory(Path.GetDirectoryName(filePath)!);
+        await File.WriteAllBytesAsync(filePath, wavBytes, ct);
+        return relativeUrl;
+    }
+
     private static List<double> ScaleTimestampSeconds(IReadOnlyList<double> timestampSeconds, int expectedCount, double durationSeconds)
     {
         var validated = ValidateTimestampSeconds(timestampSeconds, expectedCount);
@@ -534,11 +982,13 @@ public sealed class VideoNarrationService : IVideoNarrationService
         if (!double.IsFinite(durationSeconds) || durationSeconds <= 0)
             return validated;
 
+        var first = validated[0];
         var last = validated[^1];
-        if (last <= 0)
+        var span = last - first;
+        if (span <= 0)
             return validated;
 
-        var scale = durationSeconds / last;
+        var scale = durationSeconds / span;
         if (!double.IsFinite(scale) || scale <= 0)
             return validated;
 
@@ -546,7 +996,7 @@ public sealed class VideoNarrationService : IVideoNarrationService
         var previous = -0.05;
         foreach (var seconds in validated)
         {
-            var adjusted = Math.Max(previous + 0.05, seconds * scale);
+            var adjusted = Math.Max(previous + 0.05, Math.Max(0.0, (seconds - first) * scale));
             scaled.Add(adjusted);
             previous = adjusted;
         }
@@ -560,11 +1010,18 @@ public sealed class VideoNarrationService : IVideoNarrationService
         if (validated.Count != expectedCount || !double.IsFinite(durationSeconds) || durationSeconds <= 0)
             return new List<double>();
 
+        var first = validated[0];
+        var last = validated[^1];
+        var span = last - first;
+        if (span <= 0)
+            return new List<double>();
+
         var scaled = new List<double>(expectedCount);
         var previous = -0.05;
         foreach (var fraction in validated)
         {
-            var adjusted = Math.Max(previous + 0.05, fraction * durationSeconds);
+            var normalized = Math.Clamp((fraction - first) / span, 0.0, 1.0);
+            var adjusted = Math.Max(previous + 0.05, normalized * durationSeconds);
             scaled.Add(adjusted);
             previous = adjusted;
         }
@@ -638,6 +1095,19 @@ public sealed class VideoNarrationService : IVideoNarrationService
 
         return new string(chars);
     }
+
+    private static string NormalizeSyncWord(string word) =>
+        NormalizeWord(word) switch
+        {
+            "sin" => "sine",
+            "cos" => "cosine",
+            "tan" => "tangent",
+            "opp" => "opposite",
+            "adj" => "adjacent",
+            "hyp" => "hypotenuse",
+            "deg" => "degree",
+            var normalized => normalized
+        };
 
     private static List<string> SplitIntoChunks(string text, int maxChars)
     {
@@ -993,6 +1463,8 @@ public sealed class VideoNarrationService : IVideoNarrationService
     }
 
     private sealed record SynthesizedSegment(byte[] AudioBytes, WavInfo Info, double GapAfterSeconds);
+
+    private sealed record TimedNarrationWord(string Token, double StartSeconds);
 
     private readonly record struct WavInfo(
         ushort AudioFormat,

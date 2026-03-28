@@ -18,7 +18,14 @@ builder.Services.AddSingleton<IExamRepository, JsonExamRepository>();
 builder.Services.AddSingleton<IVideoJobRepository, JsonVideoJobRepository>();
 
 builder.Services.AddSingleton<StubAiChatClient>();
-builder.Services.AddHttpClient<OpenAiChatClient>();
+builder.Services.AddHttpClient<OpenAiChatClient>((sp, client) =>
+{
+    var options = sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<AiOptions>>().Value;
+    var timeoutSeconds = options.OpenAi.ChatTimeoutSeconds;
+    if (timeoutSeconds <= 0)
+        timeoutSeconds = 1200;
+    client.Timeout = TimeSpan.FromSeconds(timeoutSeconds);
+});
 builder.Services.AddHttpClient<OpenAiRealtimeClient>(client =>
 {
     client.Timeout = TimeSpan.FromMinutes(2);
@@ -26,8 +33,7 @@ builder.Services.AddHttpClient<OpenAiRealtimeClient>(client =>
 builder.Services.AddSingleton<IAiChatClient>(sp =>
 {
     var options = sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<AiOptions>>().Value;
-    var provider = options.Provider?.Trim() ?? "Stub";
-    return provider.Equals("OpenAI", StringComparison.OrdinalIgnoreCase)
+    return options.UseOpenAi()
         ? sp.GetRequiredService<OpenAiChatClient>()
         : sp.GetRequiredService<StubAiChatClient>();
 });
@@ -40,8 +46,7 @@ builder.Services.AddHttpClient<OpenAiSpeechClient>(client =>
 builder.Services.AddSingleton<IAiSpeechClient>(sp =>
 {
     var options = sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<AiOptions>>().Value;
-    var provider = options.Provider?.Trim() ?? "Stub";
-    return provider.Equals("OpenAI", StringComparison.OrdinalIgnoreCase)
+    return options.UseOpenAi()
         ? sp.GetRequiredService<OpenAiSpeechClient>()
         : sp.GetRequiredService<StubAiSpeechClient>();
 });
@@ -234,18 +239,45 @@ app.MapPost("/api/videos/{videoId:guid}/question",
             return Results.BadRequest(new { message = "Invalid video id." });
 
         var question = (req.Question ?? "").Trim();
+        var boardWrittenContent = (req.Board?.WrittenContent ?? "").Trim();
+        var drawCommands = (req.Board?.DrawCommands ?? new List<string>())
+            .Select(command => (command ?? "").Trim())
+            .Where(command => command.Length > 0)
+            .ToList();
+
+        if (req.Board is not null && string.IsNullOrWhiteSpace(boardWrittenContent))
+            return Results.BadRequest(new { message = "Write your question on the board before asking." });
+
+        if (string.IsNullOrWhiteSpace(question))
+            question = boardWrittenContent;
+
         if (string.IsNullOrWhiteSpace(question))
             return Results.BadRequest(new { message = "Question is required." });
 
         if (question.Length > 800)
             return Results.BadRequest(new { message = "Question is too long (max 800 characters)." });
 
+        if (boardWrittenContent.Length > 3000)
+            return Results.BadRequest(new { message = "Board writing is too long (max 3000 characters)." });
+
+        if (drawCommands.Count > 12)
+            return Results.BadRequest(new { message = "Too many board visuals (max 12)." });
+
+        if (drawCommands.Any(command => command.Length > 220))
+            return Results.BadRequest(new { message = "Each board visual command must stay under 220 characters." });
+
         var video = await videos.GetByIdAsync(videoId, ct);
         if (video is null)
             return Results.NotFound(new { message = "Video job not found." });
 
         var progress = req.Progress is { } p && double.IsFinite(p) ? Math.Clamp(p, 0, 1) : (double?)null;
-        var pack = await aiTeacher.AnswerVideoQuestionAsync(video, question, progress, ct);
+        var board = req.Board is null
+            ? null
+            : new VideoQuestionBoardRequest(
+                boardWrittenContent,
+                drawCommands.Count == 0 ? null : drawCommands);
+
+        var pack = await aiTeacher.AnswerVideoQuestionAsync(video, question, progress, board, ct);
         var narrationResult = await narration.TryGenerateAudioAsync(
             Guid.NewGuid(),
             pack.Narration,
@@ -319,5 +351,3 @@ app.MapPost("/api/realtime-lessons/board-sync",
     }).DisableAntiforgery();
 
 app.Run();
-
-public sealed record VideoQuestionRequest(string? Question, double? Progress);

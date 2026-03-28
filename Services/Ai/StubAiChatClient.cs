@@ -6,9 +6,8 @@ public sealed class StubAiChatClient : IAiChatClient
     {
         var text =
             "AI is not configured yet.\n\n" +
-            "Set Ai__Provider=OpenAI and Ai__OpenAi__ApiKey to enable live explanations and lesson generation.";
+            "Set Ai__OpenAi__ApiKey or OPENAI_API_KEY to enable live explanations and lesson generation.";
 
         return Task.FromResult(text);
     }
 }
-

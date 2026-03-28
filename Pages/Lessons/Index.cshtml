@@ -11,6 +11,7 @@
         <p class="muted">Generate a lesson script (then watch it as a narrated “video”).</p>
 
         <form method="post" class="card form" data-loading="lesson">
+            <div asp-validation-summary="All" class="muted small" role="alert"></div>
             <label class="label" for="topic">Lesson topic</label>
             <input id="topic" name="Topic" class="input" value="@Model.Topic" placeholder="e.g., Linear equations, grammar transitions, inference questions…" />
 
@@ -28,7 +29,7 @@
 
             <button class="btn primary" type="submit">Generate lesson</button>
             <p class="muted small">
-                In Stub mode this uses a local template. Set <code>Ai__Provider=OpenAI</code> for AI generation.
+                In Stub mode this uses a local template. Set <code>Ai__OpenAi__ApiKey</code> for OpenAI generation.
             </p>
         </form>
     </div>

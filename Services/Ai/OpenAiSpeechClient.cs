@@ -35,7 +35,7 @@ public sealed class OpenAiSpeechClient : IAiSpeechClient
 
     public async Task<byte[]?> SynthesizeWavAsync(string text, CancellationToken ct)
     {
-        var apiKey = _options.OpenAi.ApiKey;
+        var apiKey = _options.GetOpenAiApiKey();
         if (string.IsNullOrWhiteSpace(apiKey))
             return null;
 
@@ -96,7 +96,7 @@ public sealed class OpenAiSpeechClient : IAiSpeechClient
         if (audioBytes is null || audioBytes.Length == 0)
             return Array.Empty<AiSpeechWordTiming>();
 
-        var apiKey = _options.OpenAi.ApiKey;
+        var apiKey = _options.GetOpenAiApiKey();
         if (string.IsNullOrWhiteSpace(apiKey))
             return Array.Empty<AiSpeechWordTiming>();
 

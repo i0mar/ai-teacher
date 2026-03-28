@@ -1894,7 +1894,7 @@
 
   async function startSession() {
     if (!state.available) {
-      setError("Live mode requires OpenAI enabled plus an API key.");
+      setError("Live mode requires a valid OpenAI API key.");
       return;
     }
 

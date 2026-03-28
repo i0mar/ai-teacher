@@ -33,6 +33,6 @@ public class IndexModel : PageModel
         IsRealtimeAvailable = _realtime.IsConfigured();
         AvailabilityMessage = IsRealtimeAvailable
             ? "Mic interruptions are enabled. Speak naturally or type whenever you want to jump in."
-            : "Live mode requires Ai__Provider=OpenAI plus a valid Ai__OpenAi__ApiKey.";
+            : "Live mode requires a valid Ai__OpenAi__ApiKey.";
     }
 }

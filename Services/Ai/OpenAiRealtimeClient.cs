@@ -42,15 +42,13 @@ public sealed class OpenAiRealtimeClient
 
     public bool IsConfigured()
     {
-        var provider = _options.Provider?.Trim() ?? "Stub";
-        return provider.Equals("OpenAI", StringComparison.OrdinalIgnoreCase)
-            && !string.IsNullOrWhiteSpace(_options.OpenAi.ApiKey);
+        return _options.UseOpenAi() && _options.HasOpenAiApiKey();
     }
 
     public async Task<string> CreateLessonCallAnswerSdpAsync(string offerSdp, string topic, CancellationToken ct)
     {
         if (!IsConfigured())
-            throw new InvalidOperationException("Realtime tutoring requires Ai__Provider=OpenAI and Ai__OpenAi__ApiKey.");
+            throw new InvalidOperationException("Realtime tutoring requires a valid Ai__OpenAi__ApiKey.");
 
         var rawOfferSdp = offerSdp ?? "";
         if (string.IsNullOrWhiteSpace(rawOfferSdp))
@@ -60,7 +58,7 @@ public sealed class OpenAiRealtimeClient
         if (string.IsNullOrWhiteSpace(cleanTopic))
             throw new InvalidOperationException("Enter a lesson topic before starting live mode.");
 
-        var apiKey = _options.OpenAi.ApiKey!.Trim();
+        var apiKey = _options.GetOpenAiApiKey()!.Trim();
         var baseUrl = string.IsNullOrWhiteSpace(_options.OpenAi.BaseUrl)
             ? "https://api.openai.com"
             : _options.OpenAi.BaseUrl.Trim();

@@ -16,6 +16,7 @@
 <script type="application/json" id="board-lines">@Html.Raw(System.Text.Json.JsonSerializer.Serialize(Model.Video.BoardLines))</script>
 <script type="application/json" id="board-timings">@Html.Raw(System.Text.Json.JsonSerializer.Serialize(Model.Video.BoardTimings))</script>
 <script type="application/json" id="board-seconds">@Html.Raw(System.Text.Json.JsonSerializer.Serialize(Model.Video.BoardTimestampSeconds))</script>
+<script type="application/json" id="narration-segments">@Html.Raw(System.Text.Json.JsonSerializer.Serialize(Model.Video.NarrationSegments))</script>
 
 <div class="card">
     <div class="meta">
@@ -45,7 +46,8 @@
             <div class="player">
                 <button id="avatar-play" type="button" class="btn primary">Play</button>
                 <button id="avatar-stop" type="button" class="btn">Stop</button>
-                <button id="lesson-ask" type="button" class="btn">Ask a question</button>
+                <button id="lesson-ask-board" type="button" class="btn">Ask a question</button>
+                <button id="lesson-ask-quick" type="button" class="btn">Ask a quick question</button>
                 <button id="avatar-fullscreen" type="button" class="btn">Fullscreen board</button>
                 <button id="qa-understood" type="button" class="btn" hidden>I understood</button>
                 <label class="label inline" for="avatar-speed">Speed</label>
@@ -67,6 +69,8 @@
             {
                 <p class="muted small">Tip: Enable OpenAI to generate narration audio files (required for “Save video”).</p>
             }
+
+            <audio id="qa-narration-audio" class="audio" controls hidden></audio>
         </div>
     }
 </div>
@@ -77,8 +81,8 @@
     <div class="card qa-modal form" role="dialog" aria-modal="true" aria-labelledby="qa-title">
         <div class="qa-head">
             <div>
-                <div class="h3" id="qa-title">Ask a question</div>
-                <div class="muted small">The lesson pauses while you ask, then I’ll answer on the whiteboard.</div>
+                <div class="h3" id="qa-title">Ask a quick question</div>
+                <div class="muted small">Pause the lesson, type a quick follow-up, and I’ll answer on the whiteboard.</div>
             </div>
             <button type="button" class="btn" id="qa-close">Back to lesson</button>
         </div>
@@ -94,3 +98,227 @@
         <div class="qa-answer" id="qa-answer" hidden></div>
     </div>
 </div>
+
+<div class="loading-overlay" id="qa-board-overlay" hidden>
+    <div class="card qa-modal qa-board-modal" role="dialog" aria-modal="true" aria-labelledby="qa-board-title" data-question-board-root>
+        <div class="qa-head">
+            <div>
+                <div class="h3" id="qa-board-title">Ask a question</div>
+                <div class="muted small">Write on the board, add visuals, then send the full board state with your question.</div>
+            </div>
+            <button type="button" class="btn" id="qa-board-close">Back to lesson</button>
+        </div>
+
+        <div class="qa-board-layout">
+            <div class="qa-board-compose">
+                <label class="label" for="qa-board-text">Write your question on the board</label>
+                <textarea
+                    id="qa-board-text"
+                    class="input qa-board-text"
+                    rows="7"
+                    maxlength="3000"
+                    placeholder="Write the exact question or setup you want explained..."></textarea>
+
+                <div class="qa-board-builder">
+                    <div class="qa-board-builder-head">
+                        <div>
+                            <div class="label">Insert a visual</div>
+                            <div class="muted small">Add shapes, plots, and graphs to the drawing side of the board.</div>
+                        </div>
+                        <select id="qa-board-drawing-kind" class="input qa-board-kind-select">
+                            <option value="axes">Axes / graph</option>
+                            <option value="line">Line / plot</option>
+                            <option value="point">Point</option>
+                            <option value="circle">Circle</option>
+                            <option value="square">Square</option>
+                            <option value="triangle">Triangle</option>
+                            <option value="bar">Bar chart</option>
+                            <option value="custom">Custom DRAW command</option>
+                        </select>
+                    </div>
+
+                    <div class="qa-board-fields">
+                        <div class="qa-board-field-grid" data-board-kind-group="axes">
+                            <div class="qa-board-field-help qa-board-field-full muted small">Set the visible coordinate range for the graph.</div>
+                            <label class="qa-board-field">
+                                <span class="muted small">x min</span>
+                                <input id="qa-board-axes-xmin" class="input" value="-5" />
+                            </label>
+                            <label class="qa-board-field">
+                                <span class="muted small">x max</span>
+                                <input id="qa-board-axes-xmax" class="input" value="5" />
+                            </label>
+                            <label class="qa-board-field">
+                                <span class="muted small">y min</span>
+                                <input id="qa-board-axes-ymin" class="input" value="-5" />
+                            </label>
+                            <label class="qa-board-field">
+                                <span class="muted small">y max</span>
+                                <input id="qa-board-axes-ymax" class="input" value="5" />
+                            </label>
+                        </div>
+
+                        <div class="qa-board-field-grid" data-board-kind-group="line" hidden>
+                            <div class="qa-board-field-help qa-board-field-full muted small">Enter a line equation the board can graph.</div>
+                            <label class="qa-board-field qa-board-field-full">
+                                <span class="muted small">Expression</span>
+                                <input id="qa-board-line-expression" class="input" value="y=2x+1" placeholder="y=2x+1 or 2x+y=11" />
+                            </label>
+                        </div>
+
+                        <div class="qa-board-field-grid" data-board-kind-group="point" hidden>
+                            <div class="qa-board-field-help qa-board-field-full muted small">Plot a point on the current axes, with an optional label.</div>
+                            <label class="qa-board-field">
+                                <span class="muted small">x</span>
+                                <input id="qa-board-point-x" class="input" value="3" />
+                            </label>
+                            <label class="qa-board-field">
+                                <span class="muted small">y</span>
+                                <input id="qa-board-point-y" class="input" value="7" />
+                            </label>
+                            <label class="qa-board-field qa-board-field-full">
+                                <span class="muted small">Label</span>
+                                <input id="qa-board-point-label" class="input" value="(3,7)" placeholder="(3,7)" />
+                            </label>
+                        </div>
+
+                        <div class="qa-board-field-grid" data-board-kind-group="circle" hidden>
+                            <div class="qa-board-field-help qa-board-field-full muted small">Draw a circle using its center and radius.</div>
+                            <label class="qa-board-field">
+                                <span class="muted small">Center x</span>
+                                <input id="qa-board-circle-x" class="input" value="0" />
+                            </label>
+                            <label class="qa-board-field">
+                                <span class="muted small">Center y</span>
+                                <input id="qa-board-circle-y" class="input" value="0" />
+                            </label>
+                            <label class="qa-board-field qa-board-field-full">
+                                <span class="muted small">Radius</span>
+                                <input id="qa-board-circle-radius" class="input" value="3" />
+                            </label>
+                        </div>
+
+                        <div class="qa-board-field-grid" data-board-kind-group="square" hidden>
+                            <div class="qa-board-field-help qa-board-field-full muted small">Draw a square from its center, side length, and optional rotation.</div>
+                            <label class="qa-board-field">
+                                <span class="muted small">Center x</span>
+                                <input id="qa-board-square-x" class="input" value="2" />
+                            </label>
+                            <label class="qa-board-field">
+                                <span class="muted small">Center y</span>
+                                <input id="qa-board-square-y" class="input" value="2" />
+                            </label>
+                            <label class="qa-board-field">
+                                <span class="muted small">Size</span>
+                                <input id="qa-board-square-size" class="input" value="2" />
+                            </label>
+                            <label class="qa-board-field">
+                                <span class="muted small">Angle</span>
+                                <input id="qa-board-square-angle" class="input" value="20" />
+                            </label>
+                        </div>
+
+                        <div class="qa-board-field-grid" data-board-kind-group="triangle" hidden>
+                            <div class="qa-board-field-help qa-board-field-full muted small">Use both leg lengths, or fill an acute angle to make that angle drive the shape from the bottom leg length.</div>
+                            <label class="qa-board-field">
+                                <span class="muted small">Bottom leg length</span>
+                                <input id="qa-board-triangle-base-length" class="input" value="4" placeholder="4" />
+                            </label>
+                            <label class="qa-board-field">
+                                <span class="muted small">Vertical leg length</span>
+                                <input id="qa-board-triangle-height-length" class="input" value="3" placeholder="3" />
+                            </label>
+                            <label class="qa-board-field">
+                                <span class="muted small">Acute angle (deg)</span>
+                                <input id="qa-board-triangle-angle-degrees" class="input" placeholder="35" />
+                            </label>
+                            <label class="qa-board-field">
+                                <span class="muted small">Bottom leg label</span>
+                                <input id="qa-board-triangle-base-label" class="input" value="adj" placeholder="adj or a" />
+                            </label>
+                            <label class="qa-board-field">
+                                <span class="muted small">Vertical leg label</span>
+                                <input id="qa-board-triangle-height-label" class="input" value="opp" placeholder="opp or b" />
+                            </label>
+                            <label class="qa-board-field">
+                                <span class="muted small">Hypotenuse label</span>
+                                <input id="qa-board-triangle-hyp-label" class="input" value="hyp" placeholder="hyp or c" />
+                            </label>
+                            <label class="qa-board-field qa-board-field-full">
+                                <span class="muted small">Angle label</span>
+                                <input
+                                    id="qa-board-triangle-angle-label"
+                                    class="input"
+                                    value="θ"
+                                    placeholder="θ or 35°" />
+                            </label>
+                        </div>
+
+                        <div class="qa-board-field-grid" data-board-kind-group="bar" hidden>
+                            <div class="qa-board-field-help qa-board-field-full muted small">Enter bars as label=value pairs separated by spaces.</div>
+                            <label class="qa-board-field qa-board-field-full">
+                                <span class="muted small">Bars</span>
+                                <input id="qa-board-bar-values" class="input" value="A=2 B=5 C=3" placeholder="A=2 B=5 C=3" />
+                            </label>
+                        </div>
+
+                        <div class="qa-board-field-grid" data-board-kind-group="custom" hidden>
+                            <div class="qa-board-field-help qa-board-field-full muted small">Use this only when the preset visual controls do not fit.</div>
+                            <label class="qa-board-field qa-board-field-full">
+                                <span class="muted small">Command</span>
+                                <textarea
+                                    id="qa-board-custom-command"
+                                    class="input"
+                                    rows="3"
+                                    placeholder="axes x=-10..10 y=-10..10"></textarea>
+                            </label>
+                        </div>
+                    </div>
+
+                    <div class="qa-board-command-shell">
+                        <div class="muted small">Command preview</div>
+                        <code id="qa-board-command-preview">DRAW: ...</code>
+                    </div>
+
+                    <div class="qa-board-builder-actions">
+                        <button type="button" class="btn" id="qa-board-item-save">Add visual</button>
+                        <button type="button" class="btn" id="qa-board-edit-cancel" hidden>Cancel edit</button>
+                    </div>
+                </div>
+
+                <div class="qa-board-drawing-stack">
+                    <div class="label">Board visuals</div>
+                    <div class="muted small" id="qa-board-drawing-empty">No visuals added yet.</div>
+                    <div id="qa-board-drawing-list" class="qa-board-drawing-list"></div>
+                </div>
+            </div>
+
+            <div class="qa-board-preview-panel">
+                <div class="qa-board-preview-head">
+                    <div class="label">Board preview</div>
+                    <div class="muted small">This written board and drawing set is sent with the question.</div>
+                </div>
+                <div class="avatar-stage qa-board-preview-stage">
+                    <canvas
+                        id="qa-board-preview"
+                        class="whiteboard-canvas"
+                        width="960"
+                        height="540"
+                        tabindex="0"
+                        aria-label="Question board preview"></canvas>
+                </div>
+            </div>
+        </div>
+
+        <div class="qa-actions">
+            <button type="button" class="btn primary" id="qa-board-submit">Ask</button>
+        </div>
+
+        <div class="muted small qa-error" id="qa-board-error" hidden></div>
+    </div>
+</div>
+
+@section Scripts {
+    <script src="~/js/realtime-whiteboard.js" asp-append-version="true"></script>
+    <script src="~/js/lesson-question-board.js" asp-append-version="true"></script>
+}
