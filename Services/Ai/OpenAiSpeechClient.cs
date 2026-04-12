@@ -10,11 +10,28 @@ public sealed class OpenAiSpeechClient : IAiSpeechClient
 {
     private const int MaxTranscriptionPromptChars = 3000;
     private const string DefaultNarrationInstructions =
-        "Voice Affect: Warm adult woman with a subtle Southern U.S. accent.\n" +
-        "Tone: Friendly, confident classroom teacher.\n" +
-        "Pacing: Conversational and steady, with short pauses after key math steps.\n" +
-        "Emotion: Calm, encouraging, and natural.\n" +
-        "Delivery: Sound like a real one-on-one tutor from the American South, not a voice assistant.";
+        "You are an excellent teacher speaking to a learner, not performing a commercial voiceover.\n\n" +
+        "Voice style:\n" +
+        "- Warm, calm, clear, encouraging, and confident.\n" +
+        "- Sound like a real teacher explaining concepts to a student one-on-one.\n" +
+        "- Prioritize clarity over drama.\n" +
+        "- Use natural conversational emphasis, not exaggerated acting.\n" +
+        "- Speak at a moderate pace with brief pauses after important ideas.\n" +
+        "- Slightly slow down for definitions, formulas, steps, and key takeaways.\n" +
+        "- Vary intonation naturally so the lesson feels alive and human.\n\n" +
+        "Teaching style:\n" +
+        "- Explain ideas in simple language first, then add precision.\n" +
+        "- Introduce one idea at a time.\n" +
+        "- Emphasize key terms and transitions.\n" +
+        "- When helpful, use short examples or analogies.\n" +
+        "- Occasionally sound reassuring, as if checking that the learner is following.\n" +
+        "- End sections with a concise takeaway.\n\n" +
+        "Avoid:\n" +
+        "- Overly excited influencer energy.\n" +
+        "- Robotic rhythm.\n" +
+        "- Rushing through lists.\n" +
+        "- Overly theatrical narration.\n" +
+        "- Sounding like an ad, announcer, or audiobook actor.";
 
     private static readonly JsonSerializerOptions SerializerOptions = new()
     {

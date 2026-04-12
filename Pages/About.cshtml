@@ -15,15 +15,16 @@
     </p>
 
     <h2>AI setup</h2>
-    <p>Defaults to Stub mode. To enable OpenAI:</p>
-    <pre><code>Ai__OpenAi__ApiKey=YOUR_KEY
-Ai__OpenAi__Model=gpt-5.2
-Ai__OpenAi__TtsModel=tts-1
-Ai__OpenAi__TtsVoice=alloy</code></pre>
+    <p>Defaults to Stub mode. OpenAI drives lesson generation; narration audio can use either OpenAI TTS or ElevenLabs.</p>
+    <pre><code>Ai__Provider=OpenAI
+Ai__OpenAi__ApiKey=YOUR_OPENAI_KEY
+Ai__TtsProvider=ElevenLabs
+Ai__ElevenLabs__ApiKey=YOUR_ELEVENLABS_KEY
+Ai__ElevenLabs__VoiceId=YOUR_ELEVENLABS_VOICE_ID</code></pre>
 
     <h2>“Video” generation</h2>
     <p>
-        Videos are implemented as “video jobs” built from scripts. If OpenAI is enabled, the app generates narration audio (OpenAI TTS)
+        Videos are implemented as “video jobs” built from scripts. If narration TTS is enabled, the app generates lesson audio
         and synchronizes the whiteboard writing to that narration.
         You can click “Save video” to export a real WebM file.
     </p>

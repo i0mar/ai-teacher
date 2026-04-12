@@ -43,9 +43,24 @@ builder.Services.AddHttpClient<OpenAiSpeechClient>(client =>
 {
     client.Timeout = TimeSpan.FromMinutes(10);
 });
+builder.Services.AddHttpClient<ElevenLabsSpeechClient>(client =>
+{
+    client.Timeout = TimeSpan.FromMinutes(10);
+});
 builder.Services.AddSingleton<IAiSpeechClient>(sp =>
 {
     var options = sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<AiOptions>>().Value;
+    var ttsProvider = options.ResolveTtsProvider();
+
+    if (string.Equals(ttsProvider, "ElevenLabs", StringComparison.OrdinalIgnoreCase))
+        return sp.GetRequiredService<ElevenLabsSpeechClient>();
+
+    if (string.Equals(ttsProvider, "OpenAI", StringComparison.OrdinalIgnoreCase))
+        return sp.GetRequiredService<OpenAiSpeechClient>();
+
+    if (string.Equals(ttsProvider, "Stub", StringComparison.OrdinalIgnoreCase))
+        return sp.GetRequiredService<StubAiSpeechClient>();
+
     return options.UseOpenAi()
         ? sp.GetRequiredService<OpenAiSpeechClient>()
         : sp.GetRequiredService<StubAiSpeechClient>();

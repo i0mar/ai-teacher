@@ -126,10 +126,11 @@ public sealed class VideoNarrationService : IVideoNarrationService
             var segmentsAlignToBoard = segmentsCoverBoard &&
                 SegmentsAlignToBoardLines(resolvedSegments, safeBoardLines);
             var canUseRecoveredSegmentTiming = segmentsCoverBoard && segmentsAlignToBoard;
-            var durationSeconds = GetTotalDurationSeconds(synthesizedSegments);
-            var alignedTimestampSeconds = canUseRecoveredSegmentTiming
-                ? BuildExactTimestampSeconds(synthesizedSegments)
-                : ScaleFractionsToSeconds(safeBoardTimings, safeBoardLines.Count, durationSeconds);
+            var alignedTimestampSeconds = ResolveBoardTimestampSeconds(
+                synthesizedSegments,
+                safeBoardTimings,
+                fallbackTimestampSeconds,
+                safeBoardLines.Count);
 
             var returnedSegments = canUseRecoveredSegmentTiming
                 ? resolvedSegments

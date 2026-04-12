@@ -27,13 +27,23 @@ By default the app runs in `Stub` mode (no external calls). To use OpenAI:
 ```bash
 export Ai__Provider=OpenAI
 export Ai__OpenAi__ApiKey="OPENAI_API_KEY"
-export Ai__OpenAi__Model="gpt-5.2"
+export Ai__OpenAi__Model="gpt-5.4"
 export Ai__OpenAi__RealtimeModel="gpt-realtime"
 export Ai__OpenAi__RealtimeVoice="marin"
 export Ai__OpenAi__RealtimeTranscriptionModel="gpt-4o-mini-transcribe"
 export Ai__OpenAi__TtsModel="gpt-4o-mini-tts"
 export Ai__OpenAi__TtsVoice="marin"
-export Ai__OpenAi__TtsInstructions="Voice Affect: Warm adult woman with a subtle Southern U.S. accent. Tone: Friendly, confident classroom teacher. Pacing: Conversational with short pauses after key steps. Delivery: Sound like a real one-on-one tutor from the American South."
+export Ai__OpenAi__TtsInstructions="You are an excellent teacher speaking to a learner, not performing a commercial voiceover. Voice style: Warm, calm, clear, encouraging, and confident. Sound like a real teacher explaining concepts to a student one-on-one. Prioritize clarity over drama. Use natural conversational emphasis, not exaggerated acting. Speak at a moderate pace with brief pauses after important ideas. Slightly slow down for definitions, formulas, steps, and key takeaways. Vary intonation naturally so the lesson feels alive and human. Teaching style: Explain ideas in simple language first, then add precision. Introduce one idea at a time. Emphasize key terms and transitions. When helpful, use short examples or analogies. Occasionally sound reassuring, as if checking that the learner is following. End sections with a concise takeaway. Avoid: Overly excited influencer energy. Robotic rhythm. Rushing through lists. Overly theatrical narration. Sounding like an ad, announcer, or audiobook actor."
+```
+
+To keep OpenAI for lesson generation but switch narrated lesson audio to ElevenLabs:
+
+```bash
+export Ai__TtsProvider=ElevenLabs
+export Ai__ElevenLabs__ApiKey="ELEVENLABS_API_KEY"
+export Ai__ElevenLabs__VoiceId="YOUR_ELEVENLABS_VOICE_ID"
+export Ai__ElevenLabs__ModelId="eleven_multilingual_v2"
+export Ai__ElevenLabs__OutputFormat="mp3_44100_128"
 ```
 
 Notes:
@@ -41,8 +51,10 @@ Notes:
 - The app calls the OpenAI Chat Completions API via `HttpClient` (no extra NuGet packages).
 - The new `Live Tutor` tab uses the OpenAI Realtime API over WebRTC. It streams tutor audio, then a separate board coordinator mirrors the live tutor transcript onto the lesson-style whiteboard in incremental updates using the current board state and conversation context. Student voice interruptions are handled live by server VAD.
 - Realtime voices differ from the TTS voices. Use a current Realtime voice such as `coral`, `sage`, `ash`, or `verse`.
-- If OpenAI is enabled, the app can also generate narration audio files for “videos” (OpenAI TTS) and derive board timestamps from the generated audio so writing lands much closer to the spoken explanation.
-- `gpt-4o-mini-tts` supports `Ai__OpenAi__TtsInstructions`, so you can tune delivery without changing narration text.
+- Narrated lesson audio can come from either OpenAI TTS or ElevenLabs. Set `Ai__TtsProvider=OpenAI` or `Ai__TtsProvider=ElevenLabs`.
+- ElevenLabs narration uses `POST /v1/text-to-speech/{voice_id}/with-timestamps`, so the app can derive board timestamps directly from ElevenLabs alignment data.
+- `Ai__OpenAi__TtsInstructions` only affects OpenAI TTS. ElevenLabs does not accept a free-form narration-instructions field on this endpoint, so use a suitable voice plus ElevenLabs voice settings instead.
+- The default ElevenLabs output format is `mp3_44100_128`, which the app normalizes to WAV locally before storing the generated lesson audio.
 
 ## Data locations
 

@@ -21,6 +21,39 @@ public sealed class AiTeacherService : IAiTeacherService
         _options = options.Value;
     }
 
+    private bool UsesElevenLabsTts() =>
+        string.Equals(_options.ResolveTtsProvider(), "ElevenLabs", StringComparison.OrdinalIgnoreCase);
+
+    private string BuildConfiguredNarrationPromptRules()
+    {
+        if (!UsesElevenLabsTts())
+            return "";
+
+        return
+            "- ElevenLabs spoken-transcript rule: write for a natural teacher performance, not a polished article or commercial voiceover.\n" +
+            "- Break ideas into short sentences and short paragraphs so the speech breathes naturally.\n" +
+            "- Use light conversational fillers only when they help the cadence, such as \"so\", \"okay\", \"right\", or \"now\". Do not overuse them.\n" +
+            "- Ask occasional rhetorical questions when they make the explanation feel one-to-one and live.\n" +
+            "- Use commas for short pauses and ellipses for longer pauses when a thought should land.\n" +
+            "- Use line breaks between major shifts, takeaways, or emphasis changes.\n" +
+            "- Prefer spoken teacher phrasing like \"Alright, so let's break this down\" over textbook-style opening sentences.\n" +
+            "- Explain the simple idea first, then give the precise definition, formula, or formal step.\n" +
+            "- Avoid long dense sentences, robotic repetition, and list-reading cadence.\n" +
+            "- Example of the target cadence:\n" +
+            "  Okay... so here's the idea.\n" +
+            "  When you heat water, something interesting happens.\n" +
+            "  It starts to move faster... right?\n";
+    }
+
+    private static string BuildBoardStylePromptRules() =>
+        "- Board style: write like a real teacher's whiteboard, not like narration prose.\n" +
+        "- Prefer equations, labels, definitions, key terms, arrows, short prompts, and step fragments.\n" +
+        "- Keep function words light. Avoid writing full conversational sentences on the board when a short board cue will do.\n" +
+        "- Good board lines: \"Photosynthesis\", \"Light + H2O + CO2\", \"m = 2, b = 1\", \"Substitute: x=4\", \"Check: 3(4)=12\".\n" +
+        "- Bad board lines: \"Today we will learn about photosynthesis.\" or \"We divide both sides by 3 to isolate x.\"\n" +
+        "- Better versions: \"Photosynthesis\", \"Divide by 3\", \"x = 4\".\n" +
+        "- For verbal lessons, use keywords, evidence snippets, grammar labels, and contrast pairs instead of long sentences.\n";
+
     public async Task<string> GenerateLessonScriptAsync(string topic, LessonLength length, CancellationToken ct)
     {
         var pack = await GenerateLessonVideoAsync(topic, length, ct);
@@ -410,6 +443,7 @@ public sealed class AiTeacherService : IAiTeacherService
         var boardCoverageRequirement = isShortLesson
             ? "- Board coverage requirement: for each worked example and quick-check question, write the full board solution flow with all major algebra/logic transformations (setup -> equation steps -> simplification -> final answer -> check).\n"
             : "- Board coverage requirement: for each worked example and mini-quiz question, write the full board solution flow with all major algebra/logic transformations (setup -> equation steps -> simplification -> final answer -> check).\n";
+        var configuredNarrationRules = BuildConfiguredNarrationPromptRules();
 
         var userPrompt =
             $"Create a {lessonDurationLabel} SAT lesson script on this topic:\n\n{topic}\n\n" +
@@ -433,10 +467,12 @@ public sealed class AiTeacherService : IAiTeacherService
             narrationContentRequirement +
             "- Depth requirement: do not skip reasoning. For each example and quiz item, explicitly walk through Step 1, Step 2, ... with why each transformation is valid.\n" +
             "- Narration style: conversational human cadence with short natural breaks between major steps (use natural punctuation and brief transition sentences).\n" +
+            configuredNarrationRules +
             "- Do NOT use meta-action narration like \"now I'm writing\" or \"now I'm drawing\". Just explain the content directly while board lines appear.\n" +
             drawPolicy +
             trigDrawGuard +
             whiteboardSizeRequirement +
+            BuildBoardStylePromptRules() +
             "- Board completeness rule: write every material step on the board. If narration performs a setup, substitution, transformation, elimination, simplification, or check, put that move on its own board line.\n" +
             "- Omit only filler transition phrases; when deciding between brevity and completeness, prefer writing the step.\n" +
             boardContentRequirement +
@@ -613,8 +649,10 @@ public sealed class AiTeacherService : IAiTeacherService
             "Requirements:\n" +
             "- Narration: identify the correct answer (A/B/C/D), explain why, step-by-step, and mention common traps.\n" +
             "- Narration style: clear human cadence, natural breaks, and short transition sentences between steps.\n" +
+            BuildConfiguredNarrationPromptRules() +
             "- Do NOT use meta-action narration like \"now I'm writing\" or \"now I'm drawing\". Just explain the content directly while board lines appear.\n" +
             "- Whiteboard: 14–28 short lines, max ~56 characters each, showing full solution steps from setup to final answer/check.\n" +
+            BuildBoardStylePromptRules() +
             "- Board completeness rule: write every material step on the board. If narration performs a setup, elimination, substitution, transformation, simplification, or check, put that move on its own board line.\n" +
             "- Omit only filler transition phrases; when deciding between brevity and completeness, prefer writing the step.\n" +
             "- Depth requirement: write full chain-of-work on the board, including key intermediate transformations (not just first and last line).\n" +
@@ -766,9 +804,11 @@ public sealed class AiTeacherService : IAiTeacherService
             "- Narration MUST end with returning to the lesson (e.g., \"Alright—now let's jump back into the lesson.\")\n" +
             "- Keep it brief: ~20–60 seconds spoken.\n" +
             "- Narration style: human and clear, with brief natural breaks between key points.\n" +
+            BuildConfiguredNarrationPromptRules() +
             "- Do NOT use meta-action narration like \"now I'm writing\" or \"now I'm drawing\". Just explain the content directly while board lines appear.\n" +
             "- Do NOT mention pausing/resuming playback. Avoid words like \"pause\" or \"paused\" in narration.\n" +
             $"- Whiteboard: 6–14 short lines, max ~56 characters each. First line MUST be exactly: {headerLine}\n" +
+            BuildBoardStylePromptRules() +
             "- Do not restate the full question again on later board lines. After the required first Q: line, use the remaining board space for the actual explanation.\n" +
             "- Board completeness rule: write every material step on the board. If narration performs a setup, substitution, transformation, simplification, or check, put that move on its own board line.\n" +
             "- Omit only filler transition phrases; when deciding between brevity and completeness, prefer writing the step.\n" +
@@ -940,14 +980,16 @@ public sealed class AiTeacherService : IAiTeacherService
             if (string.IsNullOrWhiteSpace(timingsText))
                 timingsText = ExtractSectionText(normalized, "TIMESTAMPS:");
 
-            var boardLines = CleanBoardLines(ParseBoardLines(boardText));
+            var boardLines = PolishGeneratedBoardLines(CleanBoardLines(ParseBoardLines(boardText)));
             var narrationSegments = CleanNarrationSegments(ParseBoardLines(spokenLinesText));
             if (narrationSegments.Count != boardLines.Count)
                 narrationSegments = new List<string>();
 
+            boardLines = PolishGeneratedBoardLines(boardLines, narrationSegments);
+
             var narration = BuildNarrationFromSegments(narrationSegments, narrationText);
             if (boardLines.Count == 0)
-                boardLines = CleanBoardLines(DeriveBoardLines(narration));
+                boardLines = PolishGeneratedBoardLines(CleanBoardLines(DeriveBoardLines(narration)));
 
             var rawTimings = ParseTimings(timingsText);
             var timings = CleanTimings(rawTimings, boardLines.Count, narration);
@@ -958,7 +1000,7 @@ public sealed class AiTeacherService : IAiTeacherService
         // Fallback if the model didn't follow the format.
         var fallbackLines = new List<string> { fallbackBoardHeader };
         fallbackLines.AddRange(DeriveBoardLines(normalized));
-        var cleanedBoard = CleanBoardLines(fallbackLines);
+        var cleanedBoard = PolishGeneratedBoardLines(CleanBoardLines(fallbackLines));
         return new AiVideoPack(HumanizeNarration(normalized), cleanedBoard, EvenTimings(cleanedBoard.Count));
     }
 
@@ -1906,7 +1948,7 @@ public sealed class AiTeacherService : IAiTeacherService
             merged.Add(IsDrawLine(current) ? current : repairedLines[i]);
         }
 
-        return CleanBoardLines(merged);
+        return PolishGeneratedBoardLines(CleanBoardLines(merged), narrationSegments);
     }
 
     private static string SummarizeNarrationSegmentToBoardLine(string? rawSegment, int index)
@@ -1941,14 +1983,32 @@ public sealed class AiTeacherService : IAiTeacherService
         text = Regex.Replace(text, @"^today we(?:'re|’re| are) focusing on\s+", "", RegexOptions.IgnoreCase);
         text = Regex.Replace(text, @"^before we move on,?\s*", "", RegexOptions.IgnoreCase);
         text = Regex.Replace(text, @"^let['’]?s [^:]{0,30}:\s*", "", RegexOptions.IgnoreCase);
+        text = Regex.Replace(text, @"^let['’]?s break this down[:,]?\s*", "", RegexOptions.IgnoreCase);
         text = Regex.Replace(text, @"^now,?\s*", "", RegexOptions.IgnoreCase);
+        text = Regex.Replace(text, @"^(?:alright|okay|so|right)[,:\s]+", "", RegexOptions.IgnoreCase);
         text = Regex.Replace(text, @"^notice\s+", "", RegexOptions.IgnoreCase);
         text = Regex.Replace(text, @"^remember\s+", "", RegexOptions.IgnoreCase);
         text = Regex.Replace(text, @"^the big idea is(?: simple)?[: ]+", "", RegexOptions.IgnoreCase);
+        text = Regex.Replace(text, @"^this means(?: that)?\s+", "", RegexOptions.IgnoreCase);
+        text = Regex.Replace(text, @"^that means(?: that)?\s+", "", RegexOptions.IgnoreCase);
+        text = Regex.Replace(text, @"^we need to\s+", "", RegexOptions.IgnoreCase);
+        text = Regex.Replace(text, @"^we can\s+", "", RegexOptions.IgnoreCase);
+        text = Regex.Replace(text, @"^we\s+", "", RegexOptions.IgnoreCase);
+        text = Regex.Replace(text, @"^you can\s+", "", RegexOptions.IgnoreCase);
+        text = Regex.Replace(text, @"^you\s+", "", RegexOptions.IgnoreCase);
         text = Regex.Replace(text, @"^step\s+\d+\s*(?:is|:)?\s*", "", RegexOptions.IgnoreCase);
         text = Regex.Replace(text, @"^to compute\s*:\s*", "", RegexOptions.IgnoreCase);
         text = Regex.Replace(text, @"^a quick reasonableness check\s*:\s*", "Check: ", RegexOptions.IgnoreCase);
         text = Regex.Replace(text, @"^take the square root\s*:\s*", "sqrt -> ", RegexOptions.IgnoreCase);
+        text = Regex.Replace(text, @"^the answer is\s+", "Answer: ", RegexOptions.IgnoreCase);
+        text = Regex.Replace(text, @"^divide both sides by\s+", "Divide by ", RegexOptions.IgnoreCase);
+        text = Regex.Replace(text, @"^multiply both sides by\s+", "Multiply by ", RegexOptions.IgnoreCase);
+        text = Regex.Replace(text, @"^add\s+(.+?)\s+to both sides$", "Add $1", RegexOptions.IgnoreCase);
+        text = Regex.Replace(text, @"^subtract\s+(.+?)\s+from both sides$", "Subtract $1", RegexOptions.IgnoreCase);
+        text = Regex.Replace(text, @"^plug in\s+", "Plug in: ", RegexOptions.IgnoreCase);
+        text = Regex.Replace(text, @"^substitute\s+", "Substitute: ", RegexOptions.IgnoreCase);
+        text = Regex.Replace(text, @"^combine like terms\b", "Combine like terms", RegexOptions.IgnoreCase);
+        text = Regex.Replace(text, @"^solve for\s+", "Solve for ", RegexOptions.IgnoreCase);
         text = Regex.Replace(text, @"\bexample\s+(\d+)\b", "Ex$1", RegexOptions.IgnoreCase);
         text = Regex.Replace(text, @"\b([A-Za-z0-9]+)\s+squared\b", "$1^2", RegexOptions.IgnoreCase);
         text = Regex.Replace(text, @"\bplus\b", "+", RegexOptions.IgnoreCase);
@@ -1968,6 +2028,132 @@ public sealed class AiTeacherService : IAiTeacherService
         line = Regex.Replace(line, @"\bEx(\d+)\s*:", "Ex$1:");
         line = Regex.Replace(line, @"\bCheck\s*:", "Check:");
         return string.IsNullOrWhiteSpace(line) ? $"Step {index + 1}" : line;
+    }
+
+    private static List<string> PolishGeneratedBoardLines(
+        IReadOnlyList<string> boardLines,
+        IReadOnlyList<string>? narrationSegments = null)
+    {
+        if (boardLines.Count == 0)
+            return new List<string>();
+
+        var polished = new List<string>(boardLines.Count);
+        var canUseNarrationHints = narrationSegments is not null && narrationSegments.Count == boardLines.Count;
+
+        for (var i = 0; i < boardLines.Count; i++)
+        {
+            var raw = (boardLines[i] ?? "").Trim();
+            if (raw.Length == 0)
+                continue;
+
+            if (IsDrawLine(raw))
+            {
+                polished.Add(CanonicalizeDrawLine(raw));
+                continue;
+            }
+
+            var candidate = FinalizeBoardLineStyle(raw);
+            if (LooksLikeVerboseBoardSentence(candidate))
+            {
+                var summarizedLine = FinalizeBoardLineStyle(SummarizeNarrationSegmentToBoardLine(candidate, i));
+                var narrationHint = canUseNarrationHints
+                    ? FinalizeBoardLineStyle(SummarizeNarrationSegmentToBoardLine(narrationSegments![i], i))
+                    : "";
+                candidate = ChooseBoardStyleCandidate(candidate, summarizedLine, narrationHint);
+            }
+
+            polished.Add(string.IsNullOrWhiteSpace(candidate) ? $"Step {i + 1}" : candidate);
+        }
+
+        return CleanBoardLines(polished);
+    }
+
+    private static string ChooseBoardStyleCandidate(params string[] candidates)
+    {
+        var best = "";
+        var bestScore = double.NegativeInfinity;
+
+        foreach (var raw in candidates)
+        {
+            var candidate = FinalizeBoardLineStyle(raw);
+            if (candidate.Length == 0)
+                continue;
+
+            var score = ScoreBoardStyleCandidate(candidate);
+            if (score > bestScore)
+            {
+                best = candidate;
+                bestScore = score;
+            }
+        }
+
+        return best;
+    }
+
+    private static double ScoreBoardStyleCandidate(string line)
+    {
+        var score = 0.0;
+        var wordCount = CountWords(line);
+        var hasEquation = Regex.IsMatch(line, @"[=<>+\-/*^]|\b\d+\b");
+        var hasBoardLabel = Regex.IsMatch(line, @"^(?:Q|Ex\d+|Example \d+|Rule|Goal|Method|Takeaway|Trap|Answer|Solution|Check|Quick check|Key idea|Definition|Formula|Setup|Substitute|Rewrite|Combine|Solve|Graph|Plot|Compare)\s*:", RegexOptions.IgnoreCase);
+
+        if (hasEquation)
+            score += 2.5;
+        if (hasBoardLabel)
+            score += 2.0;
+        if (line.Length is >= 6 and <= 56)
+            score += 1.5;
+        if (wordCount is >= 1 and <= 7)
+            score += 1.0;
+        if (LooksLikeVerboseBoardSentence(line))
+            score -= 4.0;
+
+        score -= Math.Max(0, line.Length - 64) * 0.04;
+        score -= Math.Max(0, wordCount - 9) * 0.5;
+        return score;
+    }
+
+    private static bool LooksLikeVerboseBoardSentence(string? raw)
+    {
+        var line = (raw ?? "").Trim();
+        if (line.Length == 0 || IsDrawLine(line))
+            return false;
+
+        var wordCount = CountWords(line);
+        var hasEquation = Regex.IsMatch(line, @"[=<>+\-/*^]|\b\d+\b");
+        var hasBoardLabel = Regex.IsMatch(line, @"^(?:Q|Ex\d+|Example \d+|Rule|Goal|Method|Takeaway|Trap|Answer|Solution|Check|Quick check|Key idea|Definition|Formula|Setup|Substitute|Rewrite|Combine|Solve|Graph|Plot|Compare)\s*:", RegexOptions.IgnoreCase);
+        var startsLikeSpeech = Regex.IsMatch(line, @"^(?:today|alright|okay|so|now|first|next|then|finally|remember|notice|we|you|this|that|these|those|let['’]?s|let us)\b", RegexOptions.IgnoreCase);
+        var endsLikeSentence = Regex.IsMatch(line, @"[.!?]$");
+
+        if (line.Length > 72)
+            return true;
+        if (hasBoardLabel && line.Length <= 64)
+            return false;
+        if (startsLikeSpeech && wordCount >= 4)
+            return true;
+        if (endsLikeSentence && wordCount >= 5)
+            return true;
+        if (!hasEquation && wordCount >= 9)
+            return true;
+
+        return false;
+    }
+
+    private static string FinalizeBoardLineStyle(string? raw)
+    {
+        var text = (raw ?? "").Trim();
+        if (text.Length == 0 || IsDrawLine(text))
+            return text;
+
+        text = Regex.Replace(text, @"^(?:alright|okay|so|now|right)[,:\s]+", "", RegexOptions.IgnoreCase);
+        text = Regex.Replace(text, @"^(?:we|you)\s+(?=(?:can|need|divide|multiply|add|subtract|set|plug|substitute|factor|graph|check|solve|isolate|combine|rewrite|use)\b)", "", RegexOptions.IgnoreCase);
+        text = Regex.Replace(text, @"\b(?:this|that)\s+means(?: that)?\b\s*", "", RegexOptions.IgnoreCase);
+        text = Regex.Replace(text, @"\bwe get\b\s*", "", RegexOptions.IgnoreCase);
+        text = Regex.Replace(text, @"\b(?:and\s+)?that gives us\b\s*", "", RegexOptions.IgnoreCase);
+        text = Regex.Replace(text, @"\b(?:so|then|next|finally|first)\b[:,]?\s*", "", RegexOptions.IgnoreCase);
+        text = Regex.Replace(text, @"\s+", " ").Trim();
+        text = text.TrimEnd('.', '!', '?');
+        return text;
     }
 
     private static string? ExtractJsonObject(string text)
@@ -2412,7 +2598,7 @@ public sealed class AiTeacherService : IAiTeacherService
         if (boardLines.Count == 0 || narrationSegments.Count != boardLines.Count || narrationSegments.Count < 8)
             return pack;
 
-        var hasVerboseBoardLines = boardLines.Any(line => !IsDrawLine(line) && line.Length > 90);
+        var hasVerboseBoardLines = boardLines.Any(LooksLikeVerboseBoardSentence);
         if (!HasWeakBoardNarrationAlignment(boardLines, narrationSegments) && !hasVerboseBoardLines)
             return pack;
 
@@ -2435,6 +2621,8 @@ public sealed class AiTeacherService : IAiTeacherService
             "- Keep non-DRAW lines under about 72 characters whenever possible.\n" +
             "- Complete the thought, but do not end with ellipses or clipped fragments.\n" +
             "- Use ASCII math shorthand when useful.\n" +
+            "- Prefer notes like \"m = 2, b = 1\", \"Substitute: x=4\", or \"Check: 3(4)=12\" instead of spoken-style sentences.\n" +
+            "- Bad: \"We divide both sides by 3 to isolate x.\" Good: \"Divide by 3\" or \"x = 4\".\n" +
             "- Preserve the lesson order exactly.\n" +
             "- If a spoken line is a hook, vocabulary setup, warning, or transition, give it a matching short board line.\n" +
             "- Keep DRAW lines only when the spoken line is clearly about the diagram or focus point.\n" +
@@ -2445,7 +2633,7 @@ public sealed class AiTeacherService : IAiTeacherService
             string.Join('\n', spokenLines);
 
         var repairedText = await _ai.CompleteAsync(systemPrompt, userPrompt, ct);
-        var repairedBoard = CleanBoardLines(ParseBoardLines(repairedText));
+        var repairedBoard = PolishGeneratedBoardLines(CleanBoardLines(ParseBoardLines(repairedText)), narrationSegments);
         if (repairedBoard.Count != boardLines.Count)
             return pack;
 
@@ -2517,6 +2705,7 @@ public sealed class AiTeacherService : IAiTeacherService
                 "- Expand symbols and shorthand into natural speech.\n" +
                 "- Smooth the beats together so NARRATION reads like one continuous human explanation, not a bullet list.\n" +
                 "- Use short transition phrases between beats so the voice feels natural and connected.\n" +
+                BuildConfiguredNarrationPromptRules() +
                 "- Do not use meta-action narration like \"now I'm writing\", \"let's draw\", or \"on the board\".\n" +
                 drawRequirement +
                 "- Timings: one strictly increasing timestamp per whiteboard line, format MM:SS or HH:MM:SS.\n" +
